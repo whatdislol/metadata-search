@@ -1,0 +1,62 @@
+# TREC Product Search (open-domain Amazon products, no structured metadata fields).
+# Relative paths resolve against the repo root. Files to download into data/raw/trec/ :
+#   corpus   huggingface.co/datasets/trec-product-search/product-search-corpus  ->  corpus.jsonl.gz (1.1 GB)
+#   queries  https://trec.nist.gov/data/product/2024-test-queries.tsv   (ids 300001..300117, header row)
+#   qrels    https://trec.nist.gov/data/product/2024-qrels.txt
+# Use the NIST queries file, NOT huggingface's 2024_test_queries.tsv: same 117 queries, but numbered with
+# internal ids (299, 314, ...) that do not match the qrels.
+# (2023 instead: https://trec.nist.gov/data/product/2023-test-queries.tsv + 2023-product-qrels.txt; their judged
+#  products may not all be in the 2024 corpus: scripts/tools/check_dataset_files.py --scan-corpus tells you.)
+
+dataset:
+  kind: trec_product
+  corpus: data/raw/trec/corpus.jsonl.gz
+  queries: data/raw/trec/2024-test-queries.tsv       # <qid>\t<query>, header row is skipped
+  qrels: data/raw/trec/2024-qrels.txt               # TREC qrels: <qid> 0 <docid> <grade>
+  processed: data/processed/trec_products.jsonl
+  eval_set: data/processed/trec_eval.json           # chosen queries + their judgments
+
+subset:                      # the corpus has millions of products; keep judged ones + a random sample
+  max_queries: 100
+  min_relevant: 1
+  rel_threshold: 1           # grade >= this counts as relevant (TREC grades: -1 unjudgeable, 0 no, 1 partly, 2 good, 3 perfect)
+  n_distractors: 20000       # random unjudged products added to the judged ones
+  seed: 13
+
+representation:
+  dense: title_description   # no reviews in this corpus
+  bm25: title_description
+  rerank: title_description
+  max_chars: 2000
+
+encoders:
+  dense: nomic-ai/nomic-embed-text-v1
+  cross_encoder: cross-encoder/msmarco-MiniLM-L12-en-de-v1
+  embedding_cache: .cache/trec_dense.npz
+  score_cache: .cache/ce_trec.sqlite   # remembers cross-encoder (query, doc) scores: reruns and overlapping methods are free
+  # Speed knobs (they change scores, so the dense embeddings are recomputed once if you set them):
+  # device: cuda                 # a GPU is 20-50x faster than CPU for both models
+  # max_seq_length: 256          # tokens per product for the dense encoder (default: model's 8192, texts are cut at max_chars)
+  # cross_encoder_max_length: 256  # default 512
+  # batch_size: 64
+
+retrieval:
+  rerank_depth: 100
+  rrf_k: 60
+  tags:                      # generated-tag methods: qam_tags (mode below), qam_tags_hard, qam_tags_soft
+    mode: filter             # filter = HARD (keep top_frac of the pool per tag); soft = add weight * similarity
+    top_frac: 0.3
+    weight: 0.5
+    attr_kinds: [brand, color, material, size, audience, price, feature]   # tags used by the *_attr methods
+
+eval:
+  mode: qrels                # human judgments from script 01; no LLM judge
+  methods: [keyword, semantic, rerank, hybrid, qam_tags_hard, qam_tags_soft, qam_tags_attr, qam_expand, qam_tags_attr_expand]
+  ks: [5, 10, 20]
+  rel_threshold: 1
+  out_dir: results/trec_product
+
+search:                      # queries used by scripts/02_search.py when no -q is given
+  example_queries:
+    - "waterproof phone case"
+    - "stainless steel hose clamp"
