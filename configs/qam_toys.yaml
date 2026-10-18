@@ -1,0 +1,33 @@
+dataset:
+  kind: toys_kaggle
+  raw_csv: data/raw/amazon_co-ecommerce_sample.csv
+  processed: data/processed/toys.jsonl
+
+representation:
+  dense: title_reviews        # what the bi-encoder embeds (paper matches queries to reviews)
+  bm25: title_reviews
+  rerank: title_description   # what the cross-encoder sees next to the full query
+  max_chars: 2000
+
+encoders:
+  dense: nomic-ai/nomic-embed-text-v1
+  cross_encoder: cross-encoder/msmarco-MiniLM-L12-en-de-v1
+  embedding_cache: .cache/toys_dense.npz
+
+retrieval:
+  rerank_depth: 100
+  rrf_k: 60
+
+queries:
+  path: data/queries/toys_queries.jsonl              # style "specific": near-exact item descriptions
+  path_broad: data/queries/toys_queries_broad.jsonl  # style "broad": product type + need, many matches
+  n_generate: 200            # paper: 1000 generated, 200 kept; we verify programmatically instead
+  seed: 13
+  currency: "£"              # the Kaggle sample is UK prices; set "$" to mimic the paper's wording
+
+eval:
+  ks: [3, 5, 10]
+  price_tol: 0.2             # paper: 20% slack on price / rating when judging
+  rating_tol: 0.2
+  out_dir: results/qam_toys
+  out_dir_broad: results/qam_toys_broad

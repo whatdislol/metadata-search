@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mdsearch"
+version = "0.1.0"
+description = "Experiments on using document metadata as a signal in language-model search"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.40",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "rank-bm25>=0.2.2",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+# Local encoders (bi-encoder + cross-encoder)
+ml = ["sentence-transformers>=3.0,<6", "transformers>=4.44,<5", "torch", "einops"]
+# Benchmarks with human labels (WANDS / ESCI / TREC product search)
+bench = ["ir_datasets", "ir_measures"]
+# Website backend, later.
+api = ["fastapi", "uvicorn[standard]"]
+dev = ["pytest>=8", "httpx", "ruff"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mdsearch"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100

@@ -1,0 +1,32 @@
+# LLM providers. The pipeline only ever asks get_llm(<name>) for an object with
+# complete() / complete_many(); everything provider-specific lives here.
+#
+# Select a provider with (highest priority first):
+#   1. the MDSEARCH_LLM_PROVIDER environment variable
+#   2. the `name` argument / --provider flag of a script
+#   3. `default` below
+default: uofg
+
+# On-disk cache of every LLM call (relative paths resolve against the repo root).
+cache_path: .cache/llm_cache.sqlite
+
+providers:
+  uofg:
+    kind: openai_compat
+    base_url: http://api.llm.apps.os.dcs.gla.ac.uk/v1
+    model: gpt-oss-120b
+    api_key_env: IDA_LLM_API_KEY
+    max_workers: 8  
+    timeout: 300
+    max_retries: 3
+    temperature: 0.0
+
+  uofg_offcampus:
+    kind: openai_compat
+    base_url: http://api.terrier.org/v1
+    model: gpt-oss-120b
+    api_key_env: IDA_LLM_API_KEY
+    max_workers: 8
+    timeout: 300
+    max_retries: 3
+    temperature: 0.0
