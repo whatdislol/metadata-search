@@ -4,6 +4,7 @@ import gzip
 import json
 
 import pytest
+from pathlib import Path
 from conftest import FakeEncoder, FakeLLM, FakeScorer
 from mdsearch.data.evalset import (
     EvalSet, build_qrels_dataset, build_subset, diagnose_ids, iter_jsonl, load_qrels, load_queries_tsv,
@@ -309,3 +310,22 @@ def test_negative_grade_is_treated_as_not_relevant_and_does_not_lower_ndcg(catal
                                   ks=(5,), out_dir=tmp_path, verbose=False)["summary"]["kw"]
     assert kw(with_neg)["nDCG@5"]["mean"] == pytest.approx(kw(base)["nDCG@5"]["mean"])
     assert kw(with_neg)["P@5"]["mean"] == pytest.approx(kw(base)["P@5"]["mean"])
+
+
+def test_several_query_and_qrels_files_are_merged_and_overlaps_rejected(tmp_path):
+    from mdsearch.data.evalset import as_paths, load_qrels_files, load_queries_files
+
+    q1, q2, q3 = (tmp_path / n for n in ("q23.tsv", "q24.tsv", "clash.tsv"))
+    q1.write_text("id\tquery\n200001\tred wig\n", encoding="utf-8")
+    q2.write_text("id\tquery\n300001\tpeplum top\n", encoding="utf-8")
+    q3.write_text("200001\tsomething else\n", encoding="utf-8")
+    assert load_queries_files([q1, q2]) == {"200001": "red wig", "300001": "peplum top"}
+    with pytest.raises(SystemExit, match="different queries"):
+        load_queries_files([q1, q3])
+    r1, r2 = tmp_path / "r1.txt", tmp_path / "r2.txt"
+    r1.write_text("200001 0 5 2\n", encoding="utf-8")
+    r2.write_text("300001 0 7 3\n200001 0 9 1\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="more than one qrels file"):
+        load_qrels_files([r1, r2])
+    assert load_qrels_files([r1]) == {"200001": {"5": 2}}
+    assert as_paths("a.tsv") == [Path("a.tsv")] and as_paths(["a", "b"]) == [Path("a"), Path("b")]

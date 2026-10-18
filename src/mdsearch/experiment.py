@@ -75,4 +75,5 @@ def make_methods(
         tag_top_frac=tags.get("top_frac", 0.3),
         tag_weight=tags.get("weight", 0.5),
         tag_kinds=_tag_kinds(tags.get("kinds")),
+        query_text=tags.get("query_text", "semantic"),
     )

@@ -78,7 +78,7 @@ class _TagReply(BaseModel):
     expansion: str = ""
 
 
-def _to_parsed(reply: _TagReply, query: str, max_tags: int) -> ParsedQuery:
+def _to_parsed(reply: _TagReply, query: str, max_tags: int, expand: bool = False) -> ParsedQuery:
     seen: set[str] = set()
     tags: list[Tag] = []
     for t in reply.tags:
@@ -88,7 +88,7 @@ def _to_parsed(reply: _TagReply, query: str, max_tags: int) -> ParsedQuery:
             tags.append(t)
     return ParsedQuery(
         semantic_text=reply.semantic_text.strip() or query, tags=tags[:max_tags],
-        expansion=" ".join(reply.expansion.split()),
+        expansion=" ".join(reply.expansion.split()) if expand else "",
     )
 
 
@@ -109,7 +109,7 @@ class TagParser:
                 self.llm, build_tag_prompt(query, self.expand), _TagReply, system=self.system,
                 retries=self.retries,
             )
-            return _to_parsed(reply, query, self.max_tags)
+            return _to_parsed(reply, query, self.max_tags, self.expand)
         except LLMError as e:
             log.warning("Tag generation failed for %r (%s); using no tags", query, e)
             self.n_failures += 1
@@ -123,7 +123,7 @@ class TagParser:
         out: list[ParsedQuery] = []
         for q, raw in zip(queries, replies):
             try:
-                out.append(_to_parsed(parse_reply(raw, _TagReply), q, self.max_tags))
+                out.append(_to_parsed(parse_reply(raw, _TagReply), q, self.max_tags, self.expand))
             except ValueError:
                 out.append(self.parse(q))
         return out

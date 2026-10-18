@@ -32,6 +32,8 @@ ALL_METHODS = ("keyword", "semantic", "rerank", "hybrid", "qam")
 #   searches with it. Expansion is not a filter. The cross-encoder always sees the user's original query.
 #   `rerank_expand` is the control: no filter, expansion only (compare with `rerank`).
 #
+# Which text the tag methods and rerank_expand search with is a setting too: retrieval.tags.query_text is
+# "semantic" (the LLM's shortened query, default) or "original" (the user's query, plus the expansion).
 # Which tags a tag filter uses is a setting, not a method: retrieval.tags.kinds (null = all tags, or a
 # list of tag roles such as [brand, color, size]; "attributes" = the usual attribute roles).
 # Everything except the five methods above is built only when named in `only`.
@@ -72,8 +74,11 @@ def build_methods(
     tag_top_frac: float = 0.3,
     tag_weight: float = 0.5,
     tag_kinds: tuple[str, ...] | None = None,
+    query_text: str = "semantic",
 ) -> dict[str, SearchPipeline]:
     """`llm` may be None if neither "qam" nor "qam_tags" is requested."""
+    if query_text not in ("semantic", "original"):
+        raise ValueError("query_text must be 'semantic' or 'original'")
     wanted = set(only or ALL_METHODS)
     unknown = sorted(n for n in wanted if n not in ALL_METHODS and parse_method(n) is None)
     if unknown:
@@ -119,6 +124,6 @@ def build_methods(
             )
             methods[name] = SearchPipeline(
                 name, first_stage=dense, parser=TagParser(llm, expand=expand),
-                tag_matcher=matcher, reranker=scorer, **common,
+                tag_matcher=matcher, reranker=scorer, first_stage_query=query_text, **common,
             )
     return methods

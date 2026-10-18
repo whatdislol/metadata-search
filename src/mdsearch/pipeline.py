@@ -62,6 +62,9 @@ class SearchPipeline:
     reranker: Scorer | None = None
     rerank_depth: int = 100
     rerank_text: Callable[[Product], str] = field(default=lambda p: f"{p.title}. {p.description}")
+    # text the first stage searches with: the LLM's `semantic_text` (filter terms removed, as in QAM) or the
+    # user's original query
+    first_stage_query: str = "semantic"
 
     def search(self, query: str, k: int = 10, parsed: ParsedQuery | None = None) -> SearchResult:
         if parsed is None and self.parser is not None:
@@ -83,7 +86,7 @@ class SearchPipeline:
         report: FilterReport | None = None
         semantic_q = query
         if parsed is not None:
-            if parsed.semantic_text.strip():
+            if parsed.semantic_text.strip() and self.first_stage_query == "semantic":
                 semantic_q = parsed.semantic_text
             if self.metadata_filter is not None:
                 mask, report = self.metadata_filter.apply(parsed.filters)

@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 
 from mdsearch.config import load_experiment_config, resolve_path
-from mdsearch.data.evalset import diagnose_ids, iter_jsonl, load_qrels, load_queries_tsv
+from mdsearch.data.evalset import as_paths, diagnose_ids, iter_jsonl, load_qrels_files, load_queries_files
 
 
 def main() -> None:
@@ -22,12 +22,13 @@ def main() -> None:
     args = ap.parse_args()
 
     d = load_experiment_config(args.config)["dataset"]
-    paths = {k: resolve_path(d[k]) for k in ("queries", "qrels") if k in d}
-    for k, p in paths.items():
-        print(f"{k:8s} {p}  {'(found)' if p.exists() else '(MISSING)'}")
-    if not all(p.exists() for p in paths.values()):
+    paths = {k: [resolve_path(p) for p in as_paths(d[k])] for k in ("queries", "qrels") if k in d}
+    for k, plist in paths.items():
+        for p in plist:
+            print(f"{k:8s} {p}  {'(found)' if p.exists() else '(MISSING)'}")
+    if not all(p.exists() for plist in paths.values() for p in plist):
         raise SystemExit("download the missing files first (see the comments in the config)")
-    queries, qrels = load_queries_tsv(paths["queries"]), load_qrels(paths["qrels"])
+    queries, qrels = load_queries_files(paths["queries"]), load_qrels_files(paths["qrels"])
     print()
     print("\n".join(diagnose_ids(queries, qrels)))
 

@@ -73,6 +73,34 @@ def load_qrels(path: str | Path) -> dict[str, dict[str, int]]:
     return qrels
 
 
+def as_paths(value: Any) -> list[Path]:
+    """A config value that is one path or a list of paths."""
+    return [Path(v) for v in ([value] if isinstance(value, (str, Path)) else list(value))]
+
+
+def load_queries_files(paths: Iterable[str | Path]) -> dict[str, str]:
+    """Merge several queries files (e.g. two TREC years). The same id must not mean two different queries."""
+    out: dict[str, str] = {}
+    for p in paths:
+        for qid, text in load_queries_tsv(p).items():
+            if qid in out and out[qid] != text:
+                raise SystemExit(f"query id {qid} means different queries in different files ({p}); "
+                                 "the files' id spaces overlap, so they cannot be combined")
+            out[qid] = text
+    return out
+
+
+def load_qrels_files(paths: Iterable[str | Path]) -> dict[str, dict[str, int]]:
+    out: dict[str, dict[str, int]] = {}
+    for p in paths:
+        for qid, judged in load_qrels(p).items():
+            if qid in out:
+                raise SystemExit(f"query id {qid} has judgments in more than one qrels file ({p}); "
+                                 "the files' id spaces overlap, so they cannot be combined")
+            out[qid] = judged
+    return out
+
+
 def select_queries(
     queries: dict[str, str],
     qrels: dict[str, dict[str, int]],

@@ -308,3 +308,42 @@ def test_uses_llm_covers_rerank_expand():
         assert uses_llm(n)
     for n in ("keyword", "semantic", "rerank", "hybrid"):
         assert not uses_llm(n)
+
+
+def test_original_query_text_replaces_the_shortened_query_in_the_first_stage(catalog):
+    from mdsearch.runlog import describe_filtering, filtering_label
+
+    llm = FakeLLM(reply(semantic_text="racing car", tags=[], expansion="toy vehicle"))
+    seen = []
+
+    class Spy:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def scores(self, q, mask=None):
+            seen.append(q)
+            return self.inner.scores(q, mask)
+
+    for mode, expected in (("semantic", "racing car. toy vehicle"), ("original", "fast red car. toy vehicle")):
+        seen.clear()
+        pipe = SearchPipeline("e", catalog, Spy(make_dense(catalog)), parser=TagParser(llm, expand=True),
+                              first_stage_query=mode)
+        pipe.search("fast red car", k=3)
+        assert seen == [expected]
+    # without expansion, "original" is just the user's query
+    seen.clear()
+    SearchPipeline("e", catalog, Spy(make_dense(catalog)), parser=TagParser(llm), first_stage_query="original").search("fast red car", k=3)
+    assert seen == ["fast red car"]
+
+    common = dict(
+        encoder=FakeEncoder(), scorer=FakeScorer(), llm=llm,
+        dense_rep=TitleDescription(), bm25_rep=TitleDescription(), rerank_rep=TitleDescription(),
+    )
+    got = build_methods(catalog, only=("rerank_expand", "qam_tags_soft", "rerank"), query_text="original", **common)
+    assert filtering_label(describe_filtering(got["rerank_expand"])) == "none; query expansion; searches the original query"
+    assert filtering_label(describe_filtering(got["qam_tags_soft"])).endswith("searches the original query)")
+    assert filtering_label(describe_filtering(got["rerank"])) == "none"  # no LLM parser, nothing to replace
+    assert "original" not in filtering_label(describe_filtering(
+        build_methods(catalog, only=("qam_tags_soft",), **common)["qam_tags_soft"]))
+    with pytest.raises(ValueError, match="query_text"):
+        build_methods(catalog, only=("rerank",), query_text="x", **common)

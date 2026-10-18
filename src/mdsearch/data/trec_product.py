@@ -12,7 +12,7 @@ import re
 from typing import Any
 
 from ..config import resolve_path
-from .evalset import build_qrels_dataset, iter_jsonl, load_qrels, load_queries_tsv
+from .evalset import as_paths, build_qrels_dataset, iter_jsonl, load_qrels_files, load_queries_files
 from .schema import Product, save_products
 
 _LABEL = re.compile(r"Product Description")
@@ -60,17 +60,22 @@ def prepare(cfg: dict[str, Any], *, limit: int | None = None, source: str | None
     """Write the processed subset and eval set named in cfg['dataset'] (see configs/trec_product.yaml)."""
     d = cfg["dataset"]
     corpus = resolve_path(source or d["corpus"])
-    paths = {"corpus": corpus, "queries": resolve_path(d["queries"]), "qrels": resolve_path(d["qrels"])}
-    for key, p in paths.items():
-        if not p.exists():
-            raise SystemExit(f"{p} not found; set dataset.{key} in the config")
+    paths = {
+        "corpus": [corpus],
+        "queries": [resolve_path(p) for p in as_paths(d["queries"])],  # one file or a list (several years)
+        "qrels": [resolve_path(p) for p in as_paths(d["qrels"])],
+    }
+    for key, plist in paths.items():
+        for p in plist:
+            if not p.exists():
+                raise SystemExit(f"{p} not found; set dataset.{key} in the config")
 
     records = iter_jsonl(corpus)
     if limit:  # quick tests: only the first N corpus records
         records = (r for i, r in zip(range(limit), records))
     products, evalset = build_qrels_dataset(
         records, to_product, record_id,
-        load_queries_tsv(paths["queries"]), load_qrels(paths["qrels"]), cfg.get("subset", {}),
+        load_queries_files(paths["queries"]), load_qrels_files(paths["qrels"]), cfg.get("subset", {}),
     )
     n = save_products(resolve_path(d["processed"]), products)
     evalset.save(resolve_path(d["eval_set"]))
