@@ -14,7 +14,9 @@ import numpy as np
 from .catalog import Catalog
 from .data.schema import Product
 from .filtering.metadata_filter import FilterReport, MetadataFilter
+from .filtering.tag_matcher import TagMatcher
 from .query.parser import QueryParser
+from .query.tag_parser import TagParser
 from .query.schema import ParsedQuery
 from .rank.cross_encoder import Scorer
 
@@ -54,8 +56,9 @@ class SearchPipeline:
     name: str
     catalog: Catalog
     first_stage: FirstStage
-    parser: QueryParser | None = None
+    parser: QueryParser | TagParser | None = None
     metadata_filter: MetadataFilter | None = None
+    tag_matcher: TagMatcher | None = None  # matches LLM-generated free-form tags by text
     reranker: Scorer | None = None
     rerank_depth: int = 100
     rerank_text: Callable[[Product], str] = field(default=lambda p: f"{p.title}. {p.description}")
@@ -85,7 +88,19 @@ class SearchPipeline:
             if self.metadata_filter is not None:
                 mask, report = self.metadata_filter.apply(parsed.filters)
 
-        scores = np.where(mask, self.first_stage.scores(semantic_q, mask), -np.inf)
+        boost: np.ndarray | None = None
+        if self.tag_matcher is not None and parsed is not None and parsed.tags:
+            match = self.tag_matcher.apply(parsed.tags, mask)
+            mask, boost = match.mask, match.boost
+            steps = (report.steps if report else []) + match.steps
+            report = FilterReport(total=n, remaining=int(mask.sum()), steps=steps)
+
+        if parsed is not None and parsed.expansion:
+            semantic_q = f"{semantic_q}. {parsed.expansion}"  # query rewriting; reranker still sees `query`
+        raw = self.first_stage.scores(semantic_q, mask)
+        if boost is not None:
+            raw = raw + boost
+        scores = np.where(mask, raw, -np.inf)
         depth = self.rerank_depth if self.reranker is not None else k
         order = np.argsort(-scores, kind="stable")[: max(depth, k)]
         order = order[np.isfinite(scores[order])]

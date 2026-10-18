@@ -24,11 +24,41 @@ class Filters(BaseModel):
         return not self.active()
 
 
+# Roles a generated tag can play. The tag TEXT is free-form; only this role label is from a fixed list.
+TAG_KINDS = (
+    "product_type", "brand", "color", "material", "size", "audience", "style", "feature",
+    "price", "quality", "occasion", "other",
+)
+# Roles that describe an attribute of a product (not what the product is); the default set a hard
+# filter is applied to when "attribute only" tags are requested.
+ATTRIBUTE_KINDS = ("brand", "color", "material", "size", "audience", "price", "feature")
+
+
+class Tag(BaseModel):
+    """A free-form requirement the LLM wrote itself; matched to products by text, not by field."""
+
+    text: str = Field(description="Short phrase describing one attribute products should have")
+    kind: str = Field("", description="Role of the tag, one of TAG_KINDS (e.g. 'price', 'audience').")
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def _clean(cls, v: Any) -> Any:
+        return " ".join(str(v).split()) if v is not None else ""
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _clean_kind(cls, v: Any) -> Any:
+        return "_".join(str(v).lower().split()) if v is not None else ""
+
+
 class ParsedQuery(BaseModel):
     semantic_text: str = Field(
         description="What the product is and the qualities wanted, with filter terms removed"
     )
     filters: Filters = Field(default_factory=Filters)
+    tags: list[Tag] = Field(default_factory=list)  # filled by TagParser; empty for fixed-tag QAM
+    # LLM-written expansion of the query (synonyms, product type, typical features); only when requested
+    expansion: str = ""
 
     @field_validator("filters", mode="before")
     @classmethod

@@ -23,10 +23,14 @@ class SentenceTransformerEncoder:
         model_name: str = "nomic-ai/nomic-embed-text-v1",
         batch_size: int = 32,
         device: str | None = None,
+        max_seq_length: int | None = None,
     ) -> None:
         self.name = model_name
         self.batch_size = batch_size
         self.device = device
+        self.max_seq_length = max_seq_length  # tokens kept per text; lower = much faster on CPU
+        # embeddings depend on the truncation length, so it is part of the on-disk cache key
+        self.cache_key = f"{model_name}@{max_seq_length}" if max_seq_length else model_name
         self._model: Any = None  # SentenceTransformer, loaded lazily
         self._prefixes = (
             {"query": "search_query: ", "document": "search_document: "}
@@ -43,6 +47,8 @@ class SentenceTransformerEncoder:
             self._model = SentenceTransformer(
                 self.name, trust_remote_code=True, device=self.device
             )
+            if self.max_seq_length:
+                self._model.max_seq_length = self.max_seq_length
         return self._model
 
     def encode(self, texts: Sequence[str], *, kind: str) -> np.ndarray:
@@ -88,7 +94,7 @@ class DenseRetriever:
         cache_path: str | Path | None = None,
     ) -> "DenseRetriever":
         """Embed the documents, reusing an on-disk copy if it matches ids, texts and encoder."""
-        fp = _fingerprint(ids, texts, getattr(encoder, "name", type(encoder).__name__))
+        fp = _fingerprint(ids, texts, getattr(encoder, "cache_key", getattr(encoder, "name", type(encoder).__name__)))
         if cache_path is not None and Path(cache_path).exists():
             with np.load(cache_path, allow_pickle=False) as z:
                 if str(z["fp"]) == fp:
