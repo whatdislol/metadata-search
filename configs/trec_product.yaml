@@ -2,7 +2,7 @@
 
 dataset:
   kind: trec_product
-  corpus: data/raw/trec/corpus.jsonl.gz
+  corpus: data/raw/trec/corpus.jsonl
   queries: [                                        # <qid>\t<query>, header row is skipped
     data/raw/trec/2024-test-queries.tsv,
     data/raw/trec/2023-test-queries.tsv
