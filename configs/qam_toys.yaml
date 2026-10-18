@@ -1,5 +1,10 @@
+# Approximate replication of Query Attribute Modeling (Menon et al., SIGIR '25)
+# on a public Amazon toys dataset. Relative paths resolve against the repo root.
+
 dataset:
   kind: toys_kaggle
+  # Download manually from Kaggle: "Toy Products on Amazon" (PromptCloud),
+  # file amazon_co-ecommerce_sample.csv
   raw_csv: data/raw/amazon_co-ecommerce_sample.csv
   processed: data/processed/toys.jsonl
 
@@ -17,6 +22,10 @@ encoders:
 retrieval:
   rerank_depth: 100
   rrf_k: 60
+  tags:                      # method "qam_tags": LLM-generated free-form tags matched by text
+    mode: filter             # filter = keep top_frac of the pool per tag; soft = add weight * similarity
+    top_frac: 0.3
+    weight: 0.5
 
 queries:
   path: data/queries/toys_queries.jsonl              # style "specific": near-exact item descriptions
@@ -26,8 +35,15 @@ queries:
   currency: "£"              # the Kaggle sample is UK prices; set "$" to mimic the paper's wording
 
 eval:
+  mode: llm_judge          # synthetic queries (script 03) judged by an LLM; qrels = human judgments
+  methods: [keyword, semantic, rerank, hybrid, qam]   # add qam_tags_hard, qam_tags_soft to compare tags
   ks: [3, 5, 10]
   price_tol: 0.2             # paper: 20% slack on price / rating when judging
   rating_tol: 0.2
   out_dir: results/qam_toys
   out_dir_broad: results/qam_toys_broad
+
+search:                      # queries used by scripts/02_search.py when no -q is given
+  example_queries:
+    - "educational toys from LEGO that promote creativity for children aged 5-8"
+    - "a top-rated board game for kids aged 9-12 under 40"
