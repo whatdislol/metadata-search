@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from .catalog import Catalog
@@ -10,7 +11,6 @@ from .filtering.tag_matcher import TagMatcher
 from .llm import LLM
 from .pipeline import SearchPipeline
 from .query.parser import QueryParser
-from .query.schema import ATTRIBUTE_KINDS
 from .query.tag_parser import TagParser
 from .rank.bm25 import BM25Retriever
 from .rank.cross_encoder import Scorer
@@ -19,19 +19,40 @@ from .rank.fusion import HybridRetriever
 from .representation import DocRepresentation
 
 ALL_METHODS = ("keyword", "semantic", "rerank", "hybrid", "qam")
-# Experimental methods, built only when asked for by name (so the paper comparison is unchanged).
-#   qam_tags       generated tags; hard or soft as set by `tag_mode` (config: retrieval.tags.mode)
-#   qam_tags_hard  generated tags, always a hard filter (top `tag_top_frac` of the pool per tag)
-#   qam_tags_soft  generated tags, always a soft filter (score boost of weight `tag_weight`)
-#   qam_tags_attr  as qam_tags_hard, but only attribute tags (brand, colour, price, ...) are applied;
-#                  tags that merely restate the product type are ignored
-#   qam_expand     query rewriting only: the LLM expands the query (synonyms, product type, typical
-#                  features) and the first stage searches with the expansion; no tag filtering.
-#                  The cross-encoder still sees the user's original query.
-#   qam_tags_attr_expand  qam_tags_attr plus the same query expansion
-EXTRA_METHODS = (
-    "qam_tags", "qam_tags_hard", "qam_tags_soft", "qam_tags_attr", "qam_expand", "qam_tags_attr_expand",
-)
+# Filter types compared (one axis) and query expansion (a second, optional axis):
+#
+#     qam              HARD filter on fixed metadata fields the LLM fills (brand, price, rating, age)
+#     qam_tags_hard    HARD filter on free-form tags the LLM writes, matched to products by text
+#     qam_tags_soft    SOFT filter on the same tags: nothing removed, `tag_weight` x similarity is added
+#                      to the first-stage score
+#     qam_tags         qam_tags_hard or qam_tags_soft, as set by retrieval.tags.mode
+#
+#   Add `_expand` to any of them (qam_expand, qam_tags_hard_expand, ...) for query expansion: the LLM also
+#   writes an expansion of the query (product type, synonyms, typical features) and the first stage
+#   searches with it. Expansion is not a filter. The cross-encoder always sees the user's original query.
+#   `rerank_expand` is the control: no filter, expansion only (compare with `rerank`).
+#
+# Which tags a tag filter uses is a setting, not a method: retrieval.tags.kinds (null = all tags, or a
+# list of tag roles such as [brand, color, size]; "attributes" = the usual attribute roles).
+# Everything except the five methods above is built only when named in `only`.
+_METHOD_NAME = re.compile(r"^(rerank|qam|qam_tags(?:_hard|_soft)?)(_expand)?$")
+
+
+def uses_llm(name: str) -> bool:
+    """True for every method that asks an LLM to parse the query (qam*, rerank_expand, ...)."""
+    return name == "qam" or parse_method(name) is not None and name not in ALL_METHODS
+
+
+def parse_method(name: str, default_mode: str = "filter") -> tuple[str, str | None, bool] | None:
+    """(base method, tag mode or None, expand the query?) or None if `name` is not one of the above."""
+    m = _METHOD_NAME.match(name)
+    if not m:
+        return None
+    base, expand = m.group(1), bool(m.group(2))
+    mode = None
+    if base.startswith("qam_tags"):
+        mode = {"qam_tags_hard": "filter", "qam_tags_soft": "soft"}.get(base, default_mode)
+    return base, mode, expand
 
 
 def build_methods(
@@ -50,10 +71,13 @@ def build_methods(
     tag_mode: str = "filter",
     tag_top_frac: float = 0.3,
     tag_weight: float = 0.5,
-    tag_attr_kinds: tuple[str, ...] = ATTRIBUTE_KINDS,
+    tag_kinds: tuple[str, ...] | None = None,
 ) -> dict[str, SearchPipeline]:
     """`llm` may be None if neither "qam" nor "qam_tags" is requested."""
     wanted = set(only or ALL_METHODS)
+    unknown = sorted(n for n in wanted if n not in ALL_METHODS and parse_method(n) is None)
+    if unknown:
+        raise ValueError(f"Unknown method(s) {unknown}; see the naming scheme at the top of methods.py")
     ids = catalog.ids
     bm25 = BM25Retriever(ids, catalog.texts(bm25_rep))
     dense = DenseRetriever.build(ids, catalog.texts(dense_rep), encoder, embedding_cache)
@@ -80,29 +104,21 @@ def build_methods(
             reranker=scorer,
             **common,
         )
-    attr = tuple(tag_attr_kinds)
-    # name -> (tag mode or None = no tag matching, which tag kinds are applied (None = all), expand query?)
-    tag_variants = {
-        "qam_tags": (tag_mode, None, False),
-        "qam_tags_hard": ("filter", None, False),
-        "qam_tags_soft": ("soft", None, False),
-        "qam_tags_attr": ("filter", attr, False),
-        "qam_expand": (None, None, True),
-        "qam_tags_attr_expand": ("filter", attr, True),
-    }
-    for name, (mode, kinds, expand) in tag_variants.items():
-        if name in wanted:  # not in ALL_METHODS, so only built when named in `only`
-            if llm is None:
-                raise ValueError(f"The {name!r} method needs an LLM")
+    for name in dict.fromkeys(n for n in (only or ()) if n not in ALL_METHODS):  # in the given order
+        base, mode, expand = parse_method(name, tag_mode)  # type: ignore[misc]
+        if llm is None:
+            raise ValueError(f"The {name!r} method needs an LLM")
+        if base == "qam":  # fixed metadata fields (hard) + expansion
+            methods[name] = SearchPipeline(
+                name, first_stage=dense, parser=QueryParser(llm, expand=expand),
+                metadata_filter=MetadataFilter(catalog), reranker=scorer, **common,
+            )
+        else:  # rerank_expand (tags are generated but unused) or a tag filter, hard or soft
             matcher = None if mode is None else TagMatcher(
-                dense, mode=mode, top_frac=tag_top_frac, weight=tag_weight, kinds=kinds
+                dense, mode=mode, top_frac=tag_top_frac, weight=tag_weight, kinds=tag_kinds
             )
             methods[name] = SearchPipeline(
-                name,
-                first_stage=dense,
-                parser=TagParser(llm, expand=expand),
-                tag_matcher=matcher,
-                reranker=scorer,
-                **common,
+                name, first_stage=dense, parser=TagParser(llm, expand=expand),
+                tag_matcher=matcher, reranker=scorer, **common,
             )
     return methods

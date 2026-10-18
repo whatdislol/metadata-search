@@ -197,21 +197,6 @@ def test_matcher_applies_only_tags_of_the_requested_kinds(catalog):
     assert out.mask.sum() == 2 and [s.name for s in out.steps] == ["tag:LEGO racing car"]
 
 
-def test_attr_variant_is_built_and_described(catalog):
-    from mdsearch.runlog import describe_filtering, filtering_label
-
-    common = dict(
-        encoder=FakeEncoder(), scorer=FakeScorer(),
-        llm=FakeLLM(reply(semantic_text="toy", tags=[{"text": "LEGO", "kind": "brand"}, {"text": "toy", "kind": "product_type"}])),
-        dense_rep=TitleDescription(), bm25_rep=TitleDescription(), rerank_rep=TitleDescription(),
-    )
-    got = build_methods(catalog, only=("qam_tags_hard", "qam_tags_attr"), **common)
-    assert got["qam_tags_attr"].tag_matcher.kinds and got["qam_tags_hard"].tag_matcher.kinds is None
-    assert "only" in filtering_label(describe_filtering(got["qam_tags_attr"]))
-    assert "only" not in filtering_label(describe_filtering(got["qam_tags_hard"]))
-    # the product-type tag is ignored, so the attr variant keeps more candidates than the all-tags one
-    assert got["qam_tags_attr"].search("lego", k=5).n_candidates > got["qam_tags_hard"].search("lego", k=5).n_candidates
-
 
 def test_tag_report_splits_queries_by_attribute_tags():
     from mdsearch.eval.analysis import tag_report
@@ -254,18 +239,72 @@ def test_expansion_is_parsed_and_changes_only_the_first_stage_query(catalog):
     assert seen["first"] == ["racing car. toy vehicle for racing"] and seen["rerank"] == ["fast car"]
 
 
-def test_expand_methods_are_built_labelled_and_share_one_parser_prompt(catalog):
+
+
+COMMON = lambda llm: dict(
+    encoder=FakeEncoder(), scorer=FakeScorer(), llm=llm,
+    dense_rep=TitleDescription(), bm25_rep=TitleDescription(), rerank_rep=TitleDescription(),
+)
+
+
+def test_method_names_are_a_filter_type_plus_optional_expand():
+    from mdsearch.methods import parse_method as p
+
+    assert p("qam_tags_hard") == ("qam_tags_hard", "filter", False)
+    assert p("qam_tags_soft_expand") == ("qam_tags_soft", "soft", True)
+    assert p("qam_tags", "soft") == ("qam_tags", "soft", False) and p("qam_tags_expand", "soft")[1:] == ("soft", True)
+    assert p("qam_expand") == ("qam", None, True) and p("rerank_expand") == ("rerank", None, True)
+    for bad in ("hybrid_expand", "qam_tags_attr", "qam_tags_hard_attr", "qam_expand_expand", "qam_tags_medium"):
+        assert p(bad) is None
+
+
+def test_every_filter_type_can_be_combined_with_expansion(catalog):
     from mdsearch.runlog import describe_filtering, filtering_label
 
-    common = dict(
-        encoder=FakeEncoder(), scorer=FakeScorer(),
-        llm=FakeLLM(reply(semantic_text="toy", tags=[{"text": "LEGO", "kind": "brand"}], expansion="building bricks")),
-        dense_rep=TitleDescription(), bm25_rep=TitleDescription(), rerank_rep=TitleDescription(),
-    )
-    got = build_methods(catalog, only=("qam_expand", "qam_tags_attr_expand", "qam_tags_attr"), **common)
-    assert got["qam_expand"].tag_matcher is None and got["qam_expand"].parser.expand
-    assert got["qam_tags_attr_expand"].tag_matcher.kinds and not got["qam_tags_attr"].parser.expand
-    assert filtering_label(describe_filtering(got["qam_expand"])) == "none; query expansion"
-    assert "query expansion" in filtering_label(describe_filtering(got["qam_tags_attr_expand"]))
-    assert "query expansion" not in filtering_label(describe_filtering(got["qam_tags_attr"]))
-    assert got["qam_expand"].search("lego", k=3).n_candidates == len(catalog)
+    llm = FakeLLM(lambda p, s, sc: json.dumps({
+        "semantic_text": "toy", "filters": {"brand": "LEGO"}, "expansion": "building bricks",
+        "tags": [{"text": "LEGO", "kind": "brand"}],
+    }))
+    names = ("qam_expand", "qam_tags_hard_expand", "qam_tags_soft_expand", "rerank_expand", "qam_tags_soft")
+    got = build_methods(catalog, only=names, **COMMON(llm))
+    assert list(got) == list(names)  # in the order asked for
+    assert got["qam_expand"].metadata_filter is not None and got["qam_expand"].parser.expand
+    assert got["qam_tags_hard_expand"].tag_matcher.mode == "filter" and got["qam_tags_hard_expand"].parser.expand
+    assert got["qam_tags_soft_expand"].tag_matcher.mode == "soft"
+    assert got["rerank_expand"].tag_matcher is None and got["rerank_expand"].metadata_filter is None
+    assert not got["qam_tags_soft"].parser.expand
+    assert filtering_label(describe_filtering(got["rerank_expand"])) == "none; query expansion"
+    assert filtering_label(describe_filtering(got["qam_expand"])).startswith("hard (metadata fields")
+    assert filtering_label(describe_filtering(got["qam_expand"])).endswith("query expansion)")
+    assert "query expansion" not in filtering_label(describe_filtering(got["qam_tags_soft"]))
+    assert got["rerank_expand"].search("lego", k=3).n_candidates == len(catalog)  # no filtering at all
+    assert got["qam_expand"].search("lego", k=3).n_candidates < len(catalog)  # the fixed-field hard filter
+    with pytest.raises(ValueError, match="Unknown method"):
+        build_methods(catalog, only=("rerank", "qam_tags_attr"), **COMMON(llm))
+
+
+def test_fixed_field_parser_returns_an_expansion_only_when_asked():
+    from mdsearch.query.parser import QueryParser
+
+    llm = FakeLLM(reply(semantic_text="bricks", filters={"brand": "LEGO"}, expansion="  building   bricks "))
+    on, off = QueryParser(llm, expand=True), QueryParser(llm)
+    assert on.parse("lego bricks").expansion == "building bricks" and off.parse("lego bricks").expansion == ""
+    assert on.parse_many(["a"])[0].expansion == "building bricks" and off.parse_many(["a"])[0].expansion == ""
+    assert "expansion" in on.system and "expansion" not in off.system
+
+
+def test_tag_kinds_setting():
+    from mdsearch.experiment import _tag_kinds
+    from mdsearch.query.schema import ATTRIBUTE_KINDS
+
+    assert _tag_kinds(None) is None and _tag_kinds("all") is None
+    assert _tag_kinds("attributes") == ATTRIBUTE_KINDS and _tag_kinds(["brand"]) == ("brand",)
+
+
+def test_uses_llm_covers_rerank_expand():
+    from mdsearch.methods import uses_llm
+
+    for n in ("qam", "qam_expand", "qam_tags_hard", "qam_tags_soft_expand", "rerank_expand"):
+        assert uses_llm(n)
+    for n in ("keyword", "semantic", "rerank", "hybrid"):
+        assert not uses_llm(n)

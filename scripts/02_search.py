@@ -5,7 +5,8 @@
     python scripts/02_search.py -q "creative building set" --methods rerank --brand LEGO --price-max 40 --age-max 8
 
 --methods: keyword, semantic, rerank, hybrid, qam (fixed fields, needs structured metadata),
-           qam_tags_hard / qam_tags_soft / qam_tags (LLM-generated tags). Default: eval.methods of the config.
+           qam_tags_hard / qam_tags_soft / qam_tags (LLM-generated tags) and an `_expand` suffix for query
+           expansion, e.g. qam_expand, rerank_expand (naming scheme at the top of src/mdsearch/methods.py). Default: eval.methods of the config.
 Methods that use an LLM (qam*) need a configured provider; the others run offline.
 
 Explicit filters (--brand --price-min --price-max --rating-min --age-min --age-max) add a second
@@ -27,6 +28,7 @@ from mdsearch.eval.dispatch import default_methods
 from mdsearch.experiment import load_catalog, make_methods
 from mdsearch.filtering import MetadataFilter
 from mdsearch.llm import get_llm
+from mdsearch.methods import uses_llm
 from mdsearch.query.schema import Filters, ParsedQuery
 from mdsearch.runlog import describe_methods, record_run
 
@@ -67,7 +69,7 @@ def main() -> None:
     )
 
     with record_run("02_search", config=args.config, args=vars(args)) as run:
-        llm = get_llm(args.provider) if any(m.startswith("qam") for m in only) else None
+        llm = get_llm(args.provider) if any(uses_llm(m) for m in only) else None
         catalog = load_catalog(cfg)
         pipelines = make_methods(cfg, catalog, llm, only=only)
         explicit_names: set[str] = set()

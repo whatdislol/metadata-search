@@ -21,6 +21,7 @@ from mdsearch.config import load_experiment_config
 from mdsearch.eval.dispatch import default_methods, eval_mode, format_outcome, run_evaluation
 from mdsearch.experiment import load_catalog, make_methods
 from mdsearch.llm import get_llm
+from mdsearch.methods import uses_llm
 from mdsearch.runlog import describe_methods, filtering_label, record_run
 
 
@@ -37,7 +38,7 @@ def main() -> None:
 
     cfg = load_experiment_config(args.config)
     only = tuple(m.strip() for m in args.methods.split(",")) if args.methods else default_methods(cfg)
-    needs_llm = eval_mode(cfg) == "llm_judge" or any(m.startswith("qam") for m in only)
+    needs_llm = eval_mode(cfg) == "llm_judge" or any(uses_llm(m) for m in only)
 
     with record_run("04_evaluate", config=args.config, args=vars(args), label=args.style if eval_mode(cfg) == "llm_judge" else "") as run:
         llm = get_llm(args.provider) if needs_llm else None
@@ -50,9 +51,9 @@ def main() -> None:
         )
         print("\n" + format_outcome(outcome))
         print(f"\nqueries evaluated: {outcome.report['meta']['n_queries']}   products in the pool: {len(catalog)}")
-        for name in ("qam", "qam_tags", "qam_tags_hard", "qam_tags_soft"):
-            if name in methods:
-                print(f"parser fallbacks, {name} (no filters/tags used): {methods[name].parser.n_failures}")
+        for name, pipe in methods.items():
+            if getattr(pipe, "parser", None) is not None:
+                print(f"parser fallbacks, {name} (no filters/tags used): {pipe.parser.n_failures}")
         print(f"\nresults saved in {outcome.out_dir}")
         print("filtering per method:")
         for name, desc in outcome.report["meta"]["filtering"].items():

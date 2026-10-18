@@ -47,11 +47,13 @@ retrieval:
     mode: filter             # filter = HARD (keep top_frac of the pool per tag); soft = add weight * similarity
     top_frac: 0.3
     weight: 0.5
-    attr_kinds: [brand, color, material, size, audience, price, feature]   # tags used by the *_attr methods
+    kinds: null              # which tags a tag filter uses: null = all, a list of roles, or 'attributes'
+                             # (brand, color, material, size, audience, price, feature); change it, add
+                             # --out-suffix _attrs to script 04/05 and compare
 
 eval:
   mode: qrels                # human judgments from script 01; no LLM judge
-  methods: [keyword, semantic, rerank, hybrid, qam_tags_hard, qam_tags_soft, qam_tags_attr, qam_expand, qam_tags_attr_expand]
+  methods: [keyword, semantic, rerank, hybrid, rerank_expand, qam_tags_hard, qam_tags_hard_expand, qam_tags_soft, qam_tags_soft_expand]
   ks: [5, 10, 20]
   rel_threshold: 1
   out_dir: results/trec_product

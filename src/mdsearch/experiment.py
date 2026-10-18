@@ -16,6 +16,13 @@ from .rank.dense import SentenceTransformerEncoder
 from .representation import get_representation
 
 
+def _tag_kinds(value) -> tuple[str, ...] | None:
+    """retrieval.tags.kinds: null = every tag; a list of tag roles; or "attributes" for the usual set."""
+    if value in (None, "all"):
+        return None
+    return ATTRIBUTE_KINDS if value == "attributes" else tuple(value)
+
+
 def _scorer(enc: dict) -> CrossEncoderScorer | CachedScorer:
     ce = CrossEncoderScorer(
         enc["cross_encoder"], batch_size=enc.get("batch_size", 32),
@@ -67,5 +74,5 @@ def make_methods(
         tag_mode=tags.get("mode", "filter"),
         tag_top_frac=tags.get("top_frac", 0.3),
         tag_weight=tags.get("weight", 0.5),
-        tag_attr_kinds=tuple(tags.get("attr_kinds", ATTRIBUTE_KINDS)),
+        tag_kinds=_tag_kinds(tags.get("kinds")),
     )
