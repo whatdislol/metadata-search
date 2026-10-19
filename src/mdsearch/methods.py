@@ -23,8 +23,8 @@ ALL_METHODS = ("keyword", "semantic", "rerank", "hybrid", "qam")
 #
 #     qam              HARD filter on fixed metadata fields the LLM fills (brand, price, rating, age)
 #     qam_tags_hard    HARD filter on free-form tags the LLM writes, matched to products by text
-#     qam_tags_soft    SOFT filter on the same tags: nothing removed, `tag_weight` x similarity is added
-#                      to the first-stage score
+#     qam_tags_soft    SOFT filter on the same tags: nothing removed; the z-scored tag similarity times
+#                      `tag_weight` is added to the z-scored final (cross-encoder) score
 #     qam_tags         qam_tags_hard or qam_tags_soft, as set by retrieval.tags.mode
 #
 #   Add `_expand` to any of them (qam_expand, qam_tags_hard_expand, ...) for query expansion: the LLM also
@@ -124,6 +124,7 @@ def build_methods(
             )
             methods[name] = SearchPipeline(
                 name, first_stage=dense, parser=TagParser(llm, expand=expand),
-                tag_matcher=matcher, reranker=scorer, first_stage_query=query_text, **common,
+                tag_matcher=matcher, reranker=scorer, first_stage_query=query_text,
+                **common,
             )
     return methods

@@ -3,7 +3,9 @@
 Each tag is embedded with the same encoder as the documents and compared with every product.
   mode="filter": for each tag keep the `top_frac` most similar products of the current pool
                  (rank-based, so there is no similarity threshold to calibrate per dataset).
-  mode="soft":   remove nothing; add `weight` * mean tag similarity to the first-stage score.
+  mode="soft":   remove nothing; `boost` = mean tag similarity per product. The pipeline z-scores it over the
+                 candidates and adds `weight` x that to the z-scored final (cross-encoder) score, so a soft
+                 tag can change the final order.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from .metadata_filter import FilterStep
 @dataclass
 class TagMatch:
     mask: np.ndarray
-    boost: np.ndarray  # added to first-stage scores (zeros in filter mode)
+    boost: np.ndarray  # mean tag similarity per product in soft mode (zeros in filter mode)
     steps: list[FilterStep] = field(default_factory=list)
 
 
@@ -57,7 +59,7 @@ class TagMatcher:
         sims = np.stack([self.dense.scores(t.text) for t in tags])  # (tags, products)
         steps: list[FilterStep] = []
         if self.mode == "soft":
-            boost = self.weight * sims.mean(axis=0)
+            boost = sims.mean(axis=0)  # unscaled; the pipeline applies `weight`
             return TagMatch(mask, boost, steps)
 
         new = mask.copy()

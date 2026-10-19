@@ -250,7 +250,8 @@ def analyze_qrels(per_query: list[dict], k: int = 10, ref: str | None = None, me
     """Per-method summary for qrels evaluations, plus a paired bootstrap against `ref`.
 
     `pool` is how many products were left after filtering (the whole pool for unfiltered methods), so
-    it shows how aggressive a hard filter was. "no relevant" counts queries with no relevant product
+    it shows how aggressive a hard filter was. "rel kept" is the average share of a query's relevant
+    products that survived the filter (100% = the filter removed no relevant product). "no relevant" counts queries with no relevant product
     in the top k."""
     by_method: dict[str, dict[str, dict]] = defaultdict(dict)
     for r in per_query:
@@ -267,7 +268,7 @@ def analyze_qrels(per_query: list[dict], k: int = 10, ref: str | None = None, me
             raise SystemExit(f"{key} not in the results; available: {avail}")
     qids = sorted(set.intersection(*(set(by_method[m]) for m in methods)))
     out = [f"== {len(qids)} queries, k={k}, reference = {ref}",
-           f"{'method':16s}{pk:>9s}{mk:>11s}{rk:>9s}{'no relevant':>13s}{'pool mean':>11s}{'pool median':>13s}"
+           f"{'method':16s}{pk:>9s}{mk:>11s}{rk:>9s}{'no relevant':>13s}{'pool mean':>11s}{'pool median':>13s}{'rel kept':>10s}"
            f"   {metric}({ref}) - {metric}(method)  [95% CI]   wins/losses"]
     for m in methods:
         rows = [by_method[m][q] for q in qids]
@@ -282,7 +283,9 @@ def analyze_qrels(per_query: list[dict], k: int = 10, ref: str | None = None, me
         else:
             lo, hi = paired_bootstrap(diff)
             cmp = f"{diff.mean() * 100:+6.2f}  [{lo * 100:+.2f}, {hi * 100:+.2f}]   {int((diff > 0).sum())}/{int((diff < 0).sum())}"
-        out.append(f"{m:16s}{p:8.2f}%{g:10.2f}%{rc:8.2f}%{none:13d}{pools.mean():11.0f}{np.median(pools):13.0f}   {cmp}")
+        kept = [x["rel_retained"] for x in rows if x.get("rel_retained") is not None]
+        kept_s = f"{np.mean(kept) * 100:9.1f}%" if kept else f"{'-':>10s}"
+        out.append(f"{m:16s}{p:8.2f}%{g:10.2f}%{rc:8.2f}%{none:13d}{pools.mean():11.0f}{np.median(pools):13.0f}{kept_s}   {cmp}")
     return "\n".join(out)
 
 

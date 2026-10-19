@@ -23,7 +23,7 @@ retrieval:
   rerank_depth: 100
   rrf_k: 60
   tags:                      # method "qam_tags": LLM-generated free-form tags matched by text
-    mode: filter             # filter = keep top_frac of the pool per tag; soft = add weight * similarity
+    mode: filter             # filter = keep top_frac of the pool per tag; soft = blend weight * similarity into the final score
     top_frac: 0.3
     weight: 0.5
 

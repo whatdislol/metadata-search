@@ -59,6 +59,7 @@ def describe_filtering(pipe: Any) -> dict[str, Any]:
         else:
             parts.append(
                 {"type": "soft", "source": "generated tags matched by text", "weight": tm.weight,
+                 "applied_to": "final score" if getattr(pipe, "reranker", None) is not None else "first-stage score",
                  "kinds": sorted(tm.kinds) if tm.kinds is not None else "all"}
             )
     kinds = sorted({p["type"] for p in parts})
@@ -91,7 +92,10 @@ def filtering_label(desc: Mapping[str, Any]) -> str:
             if c["type"] == "hard":
                 bits.append(f"tags: top {c['top_frac']:.0%} of pool per tag{only}")
             else:
-                bits.append(f"tags: score boost, weight {c['weight']}{only}")
+                if c.get("applied_to") == "final score":
+                    bits.append(f"tags: boost on the final score, weight {c['weight']}{only}")
+                else:
+                    bits.append(f"tags: score boost, weight {c['weight']}{only}")
     return f"{desc['kind']} ({'; '.join(bits)}{note})"
 
 

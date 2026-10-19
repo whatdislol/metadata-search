@@ -347,3 +347,62 @@ def test_original_query_text_replaces_the_shortened_query_in_the_first_stage(cat
         build_methods(catalog, only=("qam_tags_soft",), **common)["qam_tags_soft"]))
     with pytest.raises(ValueError, match="query_text"):
         build_methods(catalog, only=("rerank",), query_text="x", **common)
+
+
+
+
+def test_relevant_retention_measures_what_a_hard_filter_removed(catalog, tmp_path):
+    from mdsearch.eval.analysis import analyze_qrels
+    from mdsearch.eval.qrels_eval import evaluate_qrels
+
+    hard = tag_pipeline(catalog, mode="filter", top_frac=0.4)  # keeps 2 of the 5 products
+    soft = tag_pipeline(catalog, mode="soft")
+    qrels = {"q1": {pid: 1 for pid in catalog.ids[:4]}}  # 4 relevant products
+    evaluate_qrels({"hard": hard, "soft": soft}, {"q1": "fast LEGO car"}, qrels, ks=(1, 3),
+                   out_dir=tmp_path, verbose=False)
+    import json as _json
+
+    rows = {r["method"]: r for r in map(_json.loads, (tmp_path / "per_query.jsonl").read_text().splitlines())}
+    assert rows["soft"]["rel_retained"] == 1.0
+    assert 0 < rows["hard"]["rel_retained"] < 1.0
+    text = analyze_qrels(list(rows.values()), k=3, ref="soft")
+    assert "rel kept" in text and "100.0%" in text
+
+
+def test_soft_tags_are_blended_into_the_final_score_so_they_can_change_the_order(catalog):
+    from mdsearch.runlog import describe_filtering, filtering_label
+
+    class Decisive(FakeScorer):  # the cross-encoder strongly prefers the LEGO bricks product
+        def score(self, q, docs):
+            return [1.0 if "creative bricks" in d else 0.0 for d in docs]
+
+    dense = make_dense(catalog)
+    llm = FakeLLM(reply(semantic_text="toy", tags=[{"text": "soft rattle babies", "kind": "feature"}]))
+
+    def pipe(weight):
+        return SearchPipeline(
+            "s", catalog, dense, parser=TagParser(llm), tag_matcher=TagMatcher(dense, mode="soft", weight=weight),
+            reranker=Decisive(),
+        )
+
+    assert pipe(0.0).search("toy", k=5).hits[0].id == "a"  # no weight: the cross-encoder decides
+    big = pipe(100.0).search("toy", k=5)
+    assert big.hits[0].id == "d" and big.n_candidates == len(catalog)  # a large weight lets the tags decide
+    assert "boost on the final score, weight 100.0" in filtering_label(describe_filtering(pipe(100.0)))
+
+
+def test_soft_tags_without_a_second_stage_fall_back_to_the_first_stage_score(catalog):
+    from mdsearch.runlog import describe_filtering, filtering_label
+
+    dense = make_dense(catalog)
+    llm = FakeLLM(reply(semantic_text="toy", tags=[{"text": "soft rattle babies", "kind": "feature"}]))
+    p = SearchPipeline("s", catalog, dense, parser=TagParser(llm), tag_matcher=TagMatcher(dense, mode="soft", weight=100.0))
+    assert p.search("toy", k=5).hits[0].id == "d"
+    assert "score boost" in filtering_label(describe_filtering(p)) and "final score" not in filtering_label(describe_filtering(p))
+
+
+def test_late_method_names_are_gone():
+    from mdsearch.methods import parse_method as p
+
+    assert p("qam_tags_soft_late") is None and p("qam_tags_soft_late_expand") is None
+    assert p("qam_tags_soft_expand") == ("qam_tags_soft", "soft", True)

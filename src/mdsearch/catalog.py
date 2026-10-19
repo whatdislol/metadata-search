@@ -32,6 +32,9 @@ class Catalog:
     def __len__(self) -> int:
         return len(self.products)
 
+    def has(self, product_id: str) -> bool:
+        return product_id in self._index
+
     def index(self, product_id: str) -> int:
         return self._index[product_id]
 

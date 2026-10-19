@@ -27,6 +27,12 @@ class FirstStage(Protocol):
     def scores(self, query: str, mask: np.ndarray | None = None) -> np.ndarray: ...
 
 
+def _z(x: np.ndarray) -> np.ndarray:
+    """Zero mean, unit variance (all zeros if the values are constant)."""
+    sd = x.std()
+    return (x - x.mean()) / sd if sd > 1e-12 else np.zeros_like(x, dtype=float)
+
+
 @dataclass
 class Hit:
     id: str
@@ -40,6 +46,8 @@ class SearchResult:
     parsed: ParsedQuery | None = None
     filter_report: FilterReport | None = None
     n_candidates: int = 0  # products left after filtering (== catalog size if no filter)
+    # which catalog products survived the filters (not saved to JSON); used to measure how many relevant ones a filter removed
+    mask: np.ndarray | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict:
         return {
@@ -101,8 +109,8 @@ class SearchPipeline:
         if parsed is not None and parsed.expansion:
             semantic_q = f"{semantic_q}. {parsed.expansion}"  # query rewriting; reranker still sees `query`
         raw = self.first_stage.scores(semantic_q, mask)
-        if boost is not None:
-            raw = raw + boost
+        if boost is not None and self.reranker is None:  # no second stage: the first stage decides the order
+            raw = raw + self.tag_matcher.weight * boost
         scores = np.where(mask, raw, -np.inf)
         depth = self.rerank_depth if self.reranker is not None else k
         order = np.argsort(-scores, kind="stable")[: max(depth, k)]
@@ -112,6 +120,8 @@ class SearchPipeline:
             docs = [self.rerank_text(self.catalog.products[i]) for i in order]
             # the cross-encoder sees the FULL original query, as in the paper
             ce = np.asarray(self.reranker.score(query, docs), dtype=float)
+            if boost is not None:  # soft tag filter: blend the tag similarity into the score that decides the order
+                ce = _z(ce) + self.tag_matcher.weight * _z(boost[order])
             resort = np.argsort(-ce, kind="stable")
             order, final = order[resort], ce[resort]
         else:
@@ -120,4 +130,4 @@ class SearchPipeline:
         hits = [
             Hit(self.catalog.ids[i], float(s)) for i, s in zip(order[:k], final[:k])
         ]
-        return SearchResult(query, hits, parsed, report, int(mask.sum()))
+        return SearchResult(query, hits, parsed, report, int(mask.sum()), mask)

@@ -40,6 +40,15 @@ def ap_at_k(rel: Sequence[bool], k: int, n_relevant: int) -> float:
     return acc / min(k, n_relevant)
 
 
+def _retention(pipe: SearchPipeline, res: Any, judged: Mapping[str, int], thr: int) -> float | None:
+    """Share of the query's relevant products (that are in the catalog) that survived the filters.
+    1.0 for methods that filter nothing; below 1.0 means the filter itself removed relevant products."""
+    if res.mask is None:
+        return None
+    idx = [pipe.catalog.index(p) for p, g in judged.items() if g >= thr and pipe.catalog.has(p)]
+    return float(res.mask[idx].mean()) if idx else None
+
+
 def evaluate_qrels(
     methods: Mapping[str, SearchPipeline],
     queries: Mapping[str, str],
@@ -78,7 +87,8 @@ def evaluate_qrels(
             if n_rel == 0:
                 skipped.add(qid)
                 continue
-            gains = [max(judged.get(h.id, 0), 0) for h in res.hits]  # TREC grade -1 (unjudgeable) counts as 0
+            gains = [max(judged.get(h.id, 0), 0) for h in res.hits]
+            kept = _retention(methods[name], res, judged, rel_threshold)  # TREC grade -1 (unjudgeable) counts as 0
             rel = [g >= rel_threshold for g in gains]
             ideal = [g for g in judged.values() if g > 0]
             row: dict[str, float] = {}
@@ -92,7 +102,7 @@ def evaluate_qrels(
             per_query.append(
                 {
                     "method": name, "query_id": qid, "n_relevant": n_rel, "gains": gains,
-                    "n_candidates": res.n_candidates, "hits": [h.id for h in res.hits],
+                    "n_candidates": res.n_candidates, "rel_retained": kept, "hits": [h.id for h in res.hits],
                     "parsed": res.parsed.model_dump() if res.parsed else None, **row,
                 }
             )
