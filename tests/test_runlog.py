@@ -19,7 +19,7 @@ def base(catalog):
 
 def test_no_filter_is_none(catalog):
     d = describe_filtering(base(catalog))
-    assert d == {"kind": "none", "components": [], "query_expansion": False, "first_stage_query": "semantic"} and filtering_label(d) == "none"
+    assert d == {"kind": "none", "components": [], "query_expansion": False} and filtering_label(d) == "none"
 
 
 def test_metadata_filter_is_hard(catalog):

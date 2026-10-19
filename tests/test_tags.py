@@ -213,7 +213,7 @@ def test_tag_report_splits_queries_by_attribute_tags():
     assert "-- without: 1 queries" in text and "color 1" in text and "product_type 1" in text
 
 
-def test_expansion_is_parsed_and_changes_only_the_first_stage_query(catalog):
+def test_expansion_is_parsed_and_added_to_the_first_stage_query_only(catalog):
     llm = FakeLLM(reply(semantic_text="racing car", tags=[], expansion="  toy  vehicle for racing  "))
     parsed = TagParser(llm, expand=True).parse("fast car")
     assert parsed.expansion == "toy vehicle for racing"
@@ -236,7 +236,7 @@ def test_expansion_is_parsed_and_changes_only_the_first_stage_query(catalog):
 
     pipe = SearchPipeline("e", catalog, Spy(make_dense(catalog)), parser=TagParser(llm, expand=True), reranker=SpyScorer())
     pipe.search("fast car", k=3)
-    assert seen["first"] == ["racing car. toy vehicle for racing"] and seen["rerank"] == ["fast car"]
+    assert seen["first"] == ["fast car. toy vehicle for racing"] and seen["rerank"] == ["fast car"]
 
 
 
@@ -310,46 +310,6 @@ def test_uses_llm_covers_rerank_expand():
         assert not uses_llm(n)
 
 
-def test_original_query_text_replaces_the_shortened_query_in_the_first_stage(catalog):
-    from mdsearch.runlog import describe_filtering, filtering_label
-
-    llm = FakeLLM(reply(semantic_text="racing car", tags=[], expansion="toy vehicle"))
-    seen = []
-
-    class Spy:
-        def __init__(self, inner):
-            self.inner = inner
-
-        def scores(self, q, mask=None):
-            seen.append(q)
-            return self.inner.scores(q, mask)
-
-    for mode, expected in (("semantic", "racing car. toy vehicle"), ("original", "fast red car. toy vehicle")):
-        seen.clear()
-        pipe = SearchPipeline("e", catalog, Spy(make_dense(catalog)), parser=TagParser(llm, expand=True),
-                              first_stage_query=mode)
-        pipe.search("fast red car", k=3)
-        assert seen == [expected]
-    # without expansion, "original" is just the user's query
-    seen.clear()
-    SearchPipeline("e", catalog, Spy(make_dense(catalog)), parser=TagParser(llm), first_stage_query="original").search("fast red car", k=3)
-    assert seen == ["fast red car"]
-
-    common = dict(
-        encoder=FakeEncoder(), scorer=FakeScorer(), llm=llm,
-        dense_rep=TitleDescription(), bm25_rep=TitleDescription(), rerank_rep=TitleDescription(),
-    )
-    got = build_methods(catalog, only=("rerank_expand", "qam_tags_soft", "rerank"), query_text="original", **common)
-    assert filtering_label(describe_filtering(got["rerank_expand"])) == "none; query expansion; searches the original query"
-    assert filtering_label(describe_filtering(got["qam_tags_soft"])).endswith("searches the original query)")
-    assert filtering_label(describe_filtering(got["rerank"])) == "none"  # no LLM parser, nothing to replace
-    assert "original" not in filtering_label(describe_filtering(
-        build_methods(catalog, only=("qam_tags_soft",), **common)["qam_tags_soft"]))
-    with pytest.raises(ValueError, match="query_text"):
-        build_methods(catalog, only=("rerank",), query_text="x", **common)
-
-
-
 
 def test_relevant_retention_measures_what_a_hard_filter_removed(catalog, tmp_path):
     from mdsearch.eval.analysis import analyze_qrels
@@ -406,3 +366,27 @@ def test_late_method_names_are_gone():
 
     assert p("qam_tags_soft_late") is None and p("qam_tags_soft_late_expand") is None
     assert p("qam_tags_soft_expand") == ("qam_tags_soft", "soft", True)
+
+
+def test_only_the_fixed_field_qam_searches_the_llms_filter_free_text(catalog):
+    from mdsearch.filtering.metadata_filter import MetadataFilter
+    from mdsearch.query.parser import QueryParser
+
+    seen = []
+
+    class Spy:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def scores(self, q, mask=None):
+            seen.append(q)
+            return self.inner.scores(q, mask)
+
+    dense = Spy(make_dense(catalog))
+    llm = FakeLLM(reply(semantic_text="bricks", filters={"brand": "LEGO"}, tags=[], expansion="building toy"))
+    SearchPipeline("tags", catalog, dense, parser=TagParser(llm)).search("red lego bricks", k=3)
+    SearchPipeline("tags+", catalog, dense, parser=TagParser(llm, expand=True)).search("red lego bricks", k=3)
+    SearchPipeline("qam", catalog, dense, parser=QueryParser(llm), metadata_filter=MetadataFilter(catalog)).search("red lego bricks", k=3)
+    SearchPipeline("qam+", catalog, dense, parser=QueryParser(llm, expand=True),
+                   metadata_filter=MetadataFilter(catalog)).search("red lego bricks", k=3)
+    assert seen == ["red lego bricks", "red lego bricks. building toy", "bricks", "bricks. building toy"]

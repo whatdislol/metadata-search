@@ -70,9 +70,6 @@ class SearchPipeline:
     reranker: Scorer | None = None
     rerank_depth: int = 100
     rerank_text: Callable[[Product], str] = field(default=lambda p: f"{p.title}. {p.description}")
-    # text the first stage searches with: the LLM's `semantic_text` (filter terms removed, as in QAM) or the
-    # user's original query
-    first_stage_query: str = "semantic"
 
     def search(self, query: str, k: int = 10, parsed: ParsedQuery | None = None) -> SearchResult:
         if parsed is None and self.parser is not None:
@@ -94,7 +91,8 @@ class SearchPipeline:
         report: FilterReport | None = None
         semantic_q = query
         if parsed is not None:
-            if parsed.semantic_text.strip() and self.first_stage_query == "semantic":
+            if self.metadata_filter is not None and parsed.semantic_text.strip():
+                # the paper's fixed-field QAM searches the query with the filter terms removed
                 semantic_q = parsed.semantic_text
             if self.metadata_filter is not None:
                 mask, report = self.metadata_filter.apply(parsed.filters)
@@ -107,7 +105,7 @@ class SearchPipeline:
             report = FilterReport(total=n, remaining=int(mask.sum()), steps=steps)
 
         if parsed is not None and parsed.expansion:
-            semantic_q = f"{semantic_q}. {parsed.expansion}"  # query rewriting; reranker still sees `query`
+            semantic_q = f"{semantic_q}. {parsed.expansion}"  # query expansion; reranker still sees `query`
         raw = self.first_stage.scores(semantic_q, mask)
         if boost is not None and self.reranker is None:  # no second stage: the first stage decides the order
             raw = raw + self.tag_matcher.weight * boost

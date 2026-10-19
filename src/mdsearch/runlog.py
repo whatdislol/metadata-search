@@ -66,9 +66,6 @@ def describe_filtering(pipe: Any) -> dict[str, Any]:
     return {
         "kind": "+".join(kinds) if kinds else "none", "components": parts,
         "query_expansion": bool(getattr(getattr(pipe, "parser", None), "expand", False)),
-        # only meaningful when an LLM parser produced a shortened query
-        "first_stage_query": getattr(pipe, "first_stage_query", "semantic")
-        if getattr(pipe, "parser", None) is not None else "semantic",
     }
 
 
@@ -79,8 +76,6 @@ def describe_methods(methods: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 def filtering_label(desc: Mapping[str, Any]) -> str:
     """One readable line, e.g. 'hard (metadata fields: missing=exclude)'."""
     note = "; query expansion" if desc.get("query_expansion") else ""
-    if desc.get("first_stage_query") == "original":
-        note += "; searches the original query"
     if desc["kind"] == "none":
         return "none" + note
     bits = []

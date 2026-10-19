@@ -15,7 +15,7 @@ dataset:
   eval_set: data/processed/trec_eval.json           # chosen queries + their judgments
 
 subset:                      # the corpus has millions of products; keep judged ones + a random sample
-  max_queries: 100
+  max_queries: null
   min_relevant: 1
   rel_threshold: 1           # grade >= this counts as relevant (TREC grades: -1 unjudgeable, 0 no, 1 partly, 2 good, 3 perfect)
   n_distractors: 20000       # random unjudged products added to the judged ones
@@ -40,9 +40,7 @@ retrieval:
   tags:                      # generated-tag methods: qam_tags (mode below), qam_tags_hard, qam_tags_soft
     mode: filter             # filter = HARD (keep top_frac of the pool per tag); soft = add weight * similarity
     top_frac: 0.3
-    weight: 0.5
-    query_text: semantic     # text the first stage searches with: 'semantic' (LLM's shortened query) or
-                             # 'original' (the user's query; with _expand methods the expansion is added)
+    weight: 0.5              # soft filter: z-scored tag similarity x this is added to the z-scored cross-encoder score
     kinds: null              # which tags a tag filter uses: null = all, a list of roles, or 'attributes'
                              # (brand, color, material, size, audience, price, feature); change it, add
                              # --out-suffix _attrs to script 04/05 and compare
