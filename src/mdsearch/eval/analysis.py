@@ -24,6 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from ..config import resolve_path
+from ..data.evalset import EvalSet
 from ..data.schema import load_products
 from ..experiment import style_paths
 from ..filtering import satisfies
@@ -343,6 +344,37 @@ def tag_report(per_query: list[dict], k: int = 10, ref: str | None = None, metri
     return "\n".join(out)
 
 
+def group_report(per_query: list[dict], groups: dict[str, str], k: int = 10, ref: str | None = None,
+                 metric: str = "nDCG") -> str:
+    """Results per query group (e.g. per TREC year or kind of query): mean metric per method and, against
+    the reference method, the paired difference with a 95% bootstrap interval. Empty if there is one group."""
+    by_method: dict[str, dict[str, dict]] = defaultdict(dict)
+    for r in per_query:
+        by_method[r["method"]][r["query_id"]] = r
+    methods = list(by_method)
+    mk = f"{metric}@{k}"
+    if not methods or mk not in next(iter(by_method[methods[0]].values())):
+        return ""
+    ref = ref if ref in by_method else methods[0]
+    qids = sorted(set.intersection(*(set(by_method[m]) for m in methods)))
+    members: dict[str, list[str]] = defaultdict(list)
+    for q in qids:
+        if groups.get(q):
+            members[groups[q]].append(q)
+    if len(members) < 2:
+        return ""
+    out = [f"{metric}@{k} by query group (difference = {ref} minus method; positive = method worse)"]
+    for name in sorted(members):
+        qs = members[name]
+        out.append(f"-- {name}: {len(qs)} queries")
+        for m in methods:
+            g = np.array([by_method[m][q][mk] for q in qs])
+            d = np.array([by_method[ref][q][mk] - by_method[m][q][mk] for q in qs])
+            cmp = "-" if m == ref else "{:+6.2f}  [{:+.2f}, {:+.2f}]".format(d.mean() * 100, *(x * 100 for x in paired_bootstrap(d)))
+            out.append(f"   {m:18s}{g.mean() * 100:8.2f}%   {cmp}")
+    return "\n".join(out)
+
+
 def run_analysis(
     cfg: dict,
     *,
@@ -361,6 +393,10 @@ def run_analysis(
     per_query = read_jsonl(d / "per_query.jsonl")
     if eval_mode(cfg) == "qrels":
         text = analyze_qrels(per_query, k, ref) + "\n\n" + tag_report(per_query, k, ref)
+        eval_set = resolve_path(cfg["dataset"]["eval_set"])
+        if eval_set.exists():
+            by_group = group_report(per_query, EvalSet.load(eval_set).groups, k, ref)
+            text += ("\n\n" + by_group) if by_group else ""
         return f"results: {d}\n\n" + text, meta.get("filtering", {})
 
     queries_path, _ = style_paths(cfg, style)

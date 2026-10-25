@@ -12,7 +12,7 @@ import re
 from typing import Any
 
 from ..config import resolve_path
-from .evalset import as_paths, build_qrels_dataset, iter_jsonl, load_qrels_files, load_queries_files
+from .evalset import as_paths, assign_groups, build_qrels_dataset, iter_jsonl, load_qrels_files, read_queries
 from .schema import Product, save_products
 
 _LABEL = re.compile(r"Product Description")
@@ -73,9 +73,15 @@ def prepare(cfg: dict[str, Any], *, limit: int | None = None, source: str | None
     records = iter_jsonl(corpus)
     if limit:  # quick tests: only the first N corpus records
         records = (r for i, r in zip(range(limit), records))
+    qf = read_queries(paths["queries"])
+    if qf.duplicates:
+        shown = ", ".join(f"{dup} (= {kept})" for dup, kept in qf.duplicates[:6])
+        print(f"dropped {len(qf.duplicates)} queries whose text repeats an earlier file's query: {shown}"
+              + (" ..." if len(qf.duplicates) > 6 else ""))
+    groups = assign_groups(qf.queries, qf.source, d.get("query_groups"))
     products, evalset = build_qrels_dataset(
         records, to_product, record_id,
-        load_queries_files(paths["queries"]), load_qrels_files(paths["qrels"]), cfg.get("subset", {}),
+        qf.queries, load_qrels_files(paths["qrels"]), cfg.get("subset", {}), groups=groups,
     )
     n = save_products(resolve_path(d["processed"]), products)
     evalset.save(resolve_path(d["eval_set"]))

@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 
 from mdsearch.config import load_experiment_config, resolve_path
-from mdsearch.data.evalset import as_paths, diagnose_ids, iter_jsonl, load_qrels_files, load_queries_files
+from mdsearch.data.evalset import as_paths, diagnose_ids, iter_jsonl, load_qrels_files, read_queries
 
 
 def main() -> None:
@@ -28,7 +28,11 @@ def main() -> None:
             print(f"{k:8s} {p}  {'(found)' if p.exists() else '(MISSING)'}")
     if not all(p.exists() for plist in paths.values() for p in plist):
         raise SystemExit("download the missing files first (see the comments in the config)")
-    queries, qrels = load_queries_files(paths["queries"]), load_qrels_files(paths["qrels"])
+    qf = read_queries(paths["queries"])
+    queries, qrels = qf.queries, load_qrels_files(paths["qrels"])
+    if qf.duplicates:
+        print(f"\n{len(qf.duplicates)} queries repeat an earlier file's query text and are dropped by script 01 "
+              f"(files are read in the order of the config): {qf.duplicates[:5]} ...")
     print()
     print("\n".join(diagnose_ids(queries, qrels)))
 

@@ -329,3 +329,56 @@ def test_several_query_and_qrels_files_are_merged_and_overlaps_rejected(tmp_path
         load_qrels_files([r1, r2])
     assert load_qrels_files([r1]) == {"200001": {"5": 2}}
     assert as_paths("a.tsv") == [Path("a.tsv")] and as_paths(["a", "b"]) == [Path("a"), Path("b")]
+
+
+def test_csv_queries_with_bom_header_and_quoted_commas(tmp_path):
+    p = tmp_path / "q.csv"
+    p.write_bytes('﻿Query_id,Query Name\nPSRT_Search_001,complete home office makeover\n'
+                  'PSRT_Search_002,"tape, ribbon"\n\n'.encode("utf-8"))
+    assert load_queries_tsv(p) == {"PSRT_Search_001": "complete home office makeover", "PSRT_Search_002": "tape, ribbon"}
+    t = tmp_path / "q.tsv"
+    t.write_text("qid\tquery\n300001\tfoo bar\n", encoding="utf-8")
+    assert load_queries_tsv(t) == {"300001": "foo bar"}  # the TSV reader still works
+
+
+def test_qrels_with_windows_line_endings_and_string_query_ids(tmp_path):
+    p = tmp_path / "qrels.txt"
+    p.write_bytes(b"PSRT_Search_001 0 1112116 0\r\nPSRT_Search_001 0 7 3\r\n")
+    assert load_qrels(p) == {"PSRT_Search_001": {"1112116": 0, "7": 3}}
+
+
+def test_duplicate_query_text_across_files_is_dropped_and_first_file_wins(tmp_path):
+    from mdsearch.data.evalset import assign_groups, read_queries
+
+    a, b = tmp_path / "2024-test.tsv", tmp_path / "2025-search.csv"
+    a.write_text("300001\tJB Weld\n300002\tpc case\n", encoding="utf-8")
+    b.write_text("Query_id,Query Name\nPSRT_Search_001,home office\nPSRT_Search_058,jb  weld!\nPSRT_Search_054,PC case\n",
+                 encoding="utf-8")
+    qf = read_queries([a, b])
+    assert list(qf.queries) == ["300001", "300002", "PSRT_Search_001"]
+    assert qf.duplicates == [("PSRT_Search_058", "300001"), ("PSRT_Search_054", "300002")]
+    assert qf.source == {"300001": "2024-test", "300002": "2024-test", "PSRT_Search_001": "2025-search"}
+    assert len(read_queries([a, b], dedupe=False).queries) == 5
+    groups = assign_groups(qf.queries, qf.source, {"2025_task": r"^PSRT_Search_0(0[1-9]|[1-4]\d|50)$"})
+    assert groups == {"300001": "2024-test", "300002": "2024-test", "PSRT_Search_001": "2025_task"}
+
+
+def test_eval_set_keeps_query_groups_and_old_files_still_load(tmp_path):
+    ev = EvalSet({"q": "x"}, {"q": {"1": 2}}, 1, {}, {"q": "2025_task"})
+    ev.save(tmp_path / "e.json")
+    assert EvalSet.load(tmp_path / "e.json").groups == {"q": "2025_task"}
+    (tmp_path / "old.json").write_text(json.dumps({"queries": {"q": "x"}, "qrels": {"q": {"1": 2}}}), encoding="utf-8")
+    assert EvalSet.load(tmp_path / "old.json").groups == {}
+
+
+def test_group_report_splits_results_by_group_and_stays_quiet_for_one_group():
+    from mdsearch.eval.analysis import group_report
+
+    rows = []
+    for q in ("1", "2", "3", "4"):
+        rows += [{"method": "rerank", "query_id": q, "nDCG@10": 0.5}, {"method": "soft", "query_id": q, "nDCG@10": 0.4 if q in "12" else 0.5}]
+    text = group_report(rows, {"1": "a", "2": "a", "3": "b", "4": "b"}, k=10, ref="rerank")
+    assert "-- a: 2 queries" in text and "-- b: 2 queries" in text
+    assert "soft" in text and "+10.00" in text.split("-- b")[0]  # reference minus method = +10 points in group a
+    assert group_report(rows, {q: "a" for q in "1234"}, k=10, ref="rerank") == ""
+    assert group_report(rows, {}, k=10, ref="rerank") == ""

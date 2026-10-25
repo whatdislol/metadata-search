@@ -3,14 +3,16 @@
 dataset:
   kind: trec_product
   corpus: data/raw/trec/corpus.jsonl
-  queries: [                                        # <qid>\t<query>, header row is skipped
-    data/raw/trec/2024-test-queries.tsv,
-    data/raw/trec/2023-test-queries.tsv
-  ]       
-  qrels: [                                          # TREC qrels: <qid> 0 <docid> <grade>
-    data/raw/trec/2024-qrels.txt,
-    data/raw/trec/2023-product-qrels.txt
-  ]               
+  queries: 
+    - data/raw/trec/2024-test-queries.tsv
+    - data/raw/trec/2023-test-queries.tsv
+    - data/raw/trec/2025-search-queries.csv
+        
+  qrels:
+    - data/raw/trec/2024-qrels.txt
+    - data/raw/trec/2023-product-qrels.txt
+    - data/raw/trec/2025-search-qrels.txt
+                 
   processed: data/processed/trec_products.jsonl
   eval_set: data/processed/trec_eval.json           # chosen queries + their judgments
 

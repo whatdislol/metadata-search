@@ -8,15 +8,17 @@ raw records into `Product`s; everything else here is shared:
     EvalSet : the chosen queries + judgments, saved as JSON next to the processed products
 
 Assumed plain-text formats (a loader for another format only has to return the same dicts):
-    queries : tab-separated  <qid>\t<query text>
+    queries : tab-separated  <qid>\t<query text>, or a .csv file  <qid>,<query text>  (header row optional)
     qrels   : TREC           <qid> <iteration> <docid> <grade>      (3 columns <qid> <docid> <grade> also works)
 """
 
 from __future__ import annotations
 
+import csv
 import gzip
 import json
 import random
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
@@ -27,8 +29,8 @@ from .schema import Product
 def open_text(path: str | Path):
     p = Path(path)
     if p.suffix == ".gz":
-        return gzip.open(p, "rt", encoding="utf-8")
-    return open(p, encoding="utf-8")
+        return gzip.open(p, "rt", encoding="utf-8-sig")
+    return open(p, encoding="utf-8-sig")  # -sig: a byte-order mark at the start of the file is dropped
 
 
 def iter_jsonl(path: str | Path) -> Iterator[dict[str, Any]]:
@@ -39,20 +41,41 @@ def iter_jsonl(path: str | Path) -> Iterator[dict[str, Any]]:
                 yield json.loads(line)
 
 
-def load_queries_tsv(path: str | Path) -> dict[str, str]:
-    out: dict[str, str] = {}
+_ID_HEADERS = ("id", "qid", "query_id", "topic")
+_TEXT_HEADERS = ("query", "text", "query_text", "title", "query name", "query_name")
+
+
+def _is_header(qid: str, text: str) -> bool:
+    return qid.strip().lower() in _ID_HEADERS and text.strip().lower() in _TEXT_HEADERS
+
+
+def _query_rows(path: Path) -> Iterator[tuple[str, str]]:
+    """(id, text) pairs of a queries file: .csv (quoted fields allowed) or tab-separated."""
+    names = [s_.lower() for s_ in Path(path).suffixes]
     with open_text(path) as f:
-        for i, line in enumerate(f):
-            line = line.rstrip("\r\n")
-            if not line.strip():
-                continue
-            qid, _, text = line.partition("\t")
-            if i == 0 and qid.strip().lower() in ("id", "qid", "query_id", "topic") \
-                    and text.strip().lower() in ("query", "text", "query_text", "title"):
-                continue  # header row
-            if text.strip():
-                out[qid.strip()] = text.strip()
+        if ".csv" in names:
+            for row in csv.reader(f):
+                if len(row) >= 2:
+                    yield row[0], row[1]
+        else:
+            for line in f:
+                line = line.rstrip("\r\n")
+                if line.strip():
+                    qid, _, text = line.partition("\t")
+                    yield qid, text
+
+
+def load_queries(path: str | Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for i, (qid, text) in enumerate(_query_rows(Path(path))):
+        if i == 0 and _is_header(qid, text):
+            continue  # header row
+        if text.strip():
+            out[qid.strip()] = text.strip()
     return out
+
+
+load_queries_tsv = load_queries  # the old name; .csv files are read too
 
 
 def load_qrels(path: str | Path) -> dict[str, dict[str, int]]:
@@ -78,15 +101,56 @@ def as_paths(value: Any) -> list[Path]:
     return [Path(v) for v in ([value] if isinstance(value, (str, Path)) else list(value))]
 
 
-def load_queries_files(paths: Iterable[str | Path]) -> dict[str, str]:
-    """Merge several queries files (e.g. two TREC years). The same id must not mean two different queries."""
+def _norm_text(text: str) -> str:
+    """Case, punctuation and spacing do not make a different query."""
+    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+@dataclass
+class QueryFiles:
+    queries: dict[str, str]
+    source: dict[str, str]  # query id -> the file (stem) it came from
+    duplicates: list[tuple[str, str]] = field(default_factory=list)  # (dropped id, id with the same text it repeats)
+
+
+def read_queries(paths: Iterable[str | Path], *, dedupe: bool = True) -> QueryFiles:
+    """Merge several queries files (e.g. several TREC years). The same id must not mean two different
+    queries. With `dedupe`, a query whose text repeats an earlier one under another id (a later year
+    re-using a hard query) is dropped, so the same query is not counted twice; list files in the order
+    whose judgments you want to keep."""
     out: dict[str, str] = {}
+    source: dict[str, str] = {}
+    seen: dict[str, str] = {}  # normalised text -> id that has it
+    dups: list[tuple[str, str]] = []
     for p in paths:
-        for qid, text in load_queries_tsv(p).items():
+        stem = Path(p).name.split(".")[0]
+        for qid, text in load_queries(p).items():
             if qid in out and out[qid] != text:
                 raise SystemExit(f"query id {qid} means different queries in different files ({p}); "
                                  "the files' id spaces overlap, so they cannot be combined")
+            key = _norm_text(text)
+            if dedupe and qid not in out and key in seen:
+                dups.append((qid, seen[key]))
+                continue
             out[qid] = text
+            source.setdefault(qid, stem)
+            seen.setdefault(key, qid)
+    return QueryFiles(out, source, dups)
+
+
+def load_queries_files(paths: Iterable[str | Path]) -> dict[str, str]:
+    return read_queries(paths).queries
+
+
+def assign_groups(
+    queries: Iterable[str], source: dict[str, str], patterns: dict[str, str] | None = None
+) -> dict[str, str]:
+    """A group name per query id: the first `patterns` entry (name -> regex on the id) that matches,
+    else the file the query came from. Used to report results per year or per kind of query."""
+    rules = [(name, re.compile(rx)) for name, rx in (patterns or {}).items()]
+    out: dict[str, str] = {}
+    for q in queries:
+        out[q] = next((name for name, rx in rules if rx.search(q)), source.get(q, ""))
     return out
 
 
@@ -159,6 +223,7 @@ class EvalSet:
     qrels: dict[str, dict[str, int]]
     rel_threshold: int = 1
     notes: dict[str, Any] = field(default_factory=dict)
+    groups: dict[str, str] = field(default_factory=dict)  # query id -> group (year / kind of query)
 
     def save(self, path: str | Path) -> None:
         p = Path(path)
@@ -166,7 +231,7 @@ class EvalSet:
         p.write_text(
             json.dumps(
                 {"rel_threshold": self.rel_threshold, "queries": self.queries,
-                 "qrels": self.qrels, "notes": self.notes}
+                 "qrels": self.qrels, "notes": self.notes, "groups": self.groups}
             ),
             encoding="utf-8",
         )
@@ -174,7 +239,7 @@ class EvalSet:
     @classmethod
     def load(cls, path: str | Path) -> "EvalSet":
         d = json.loads(Path(path).read_text(encoding="utf-8"))
-        return cls(d["queries"], d["qrels"], d.get("rel_threshold", 1), d.get("notes", {}))
+        return cls(d["queries"], d["qrels"], d.get("rel_threshold", 1), d.get("notes", {}), d.get("groups", {}))
 
 
 def build_qrels_dataset(
@@ -185,6 +250,7 @@ def build_qrels_dataset(
     qrels: dict[str, dict[str, int]],
     subset: dict[str, Any],
     log: Callable[[str], None] = print,
+    groups: dict[str, str] | None = None,
 ) -> tuple[list[Product], EvalSet]:
     """Shared preparation for judged collections: choose queries, keep their judged products plus
     random distractors, and drop queries that lost every relevant product. `subset` is the config
@@ -222,7 +288,8 @@ def build_qrels_dataset(
         if any(g >= thr for g in judged.values()):
             eq[q], er[q] = queries[q], judged
     log(f"queries kept: {len(eq)}   dropped (no relevant product in the corpus): {len(chosen) - len(eq)}")
-    return products, EvalSet(eq, er, thr, {"n_products": len(products), "n_corpus_records": n_seen})
+    kept_groups = {q: g for q, g in (groups or {}).items() if q in eq}
+    return products, EvalSet(eq, er, thr, {"n_products": len(products), "n_corpus_records": n_seen}, kept_groups)
 
 
 def diagnose_ids(queries: dict[str, str], qrels: dict[str, dict[str, int]]) -> list[str]:
