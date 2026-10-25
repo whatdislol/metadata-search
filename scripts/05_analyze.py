@@ -1,8 +1,8 @@
 """Step 5: look inside the evaluation results (no LLM, no models, runs in seconds).
 
     python scripts/05_analyze.py --config qam_toys [--style specific|broad] [--k 5] [--ref qam] [--misses 15] [--parse-errors 15]
-    python scripts/05_analyze.py --config trec_product --k 10 --ref qam_tags_hard
-    python scripts/05_analyze.py --config qam_toys --out-suffix _tags --ref qam_tags_hard
+    python scripts/05_analyze.py --config trec_product --k 10 --ref rerank
+    python scripts/05_analyze.py --config qam_toys --out-suffix _tags --ref rerank
 
 eval.mode llm_judge: where non-relevant results come from (hard-constraint violations vs the subjective
   part), precision among results that satisfy the constraints, source-product hits, parser mistakes,

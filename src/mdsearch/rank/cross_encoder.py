@@ -47,7 +47,7 @@ class CrossEncoderScorer:
 
 class CachedScorer:
     """Remembers every (query, document) score on disk. Methods that rerank overlapping candidates
-    (rerank, qam_tags_hard, qam_tags_soft, ...) and repeated runs only pay for pairs not seen before."""
+    (rerank, rerank_hard, rerank_soft, ...) and repeated runs only pay for pairs not seen before."""
 
     def __init__(self, inner: "CrossEncoderScorer", path: str | Path) -> None:
         self.inner = inner

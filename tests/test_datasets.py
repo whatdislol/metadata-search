@@ -168,7 +168,7 @@ def test_evaluate_qrels_scores_methods_and_records_filtering(catalog, tmp_path):
 def qrels_cfg(tmp_path, mode="qrels"):
     return {
         "dataset": {"eval_set": str(tmp_path / "e.json")},
-        "eval": {"mode": mode, "ks": [1, 3], "out_dir": str(tmp_path / "res"), "methods": ["rerank", "qam_tags_hard"]},
+        "eval": {"mode": mode, "ks": [1, 3], "out_dir": str(tmp_path / "res"), "methods": ["rerank", "rerank_hard"]},
         "retrieval": {"tags": {"mode": "filter"}},
     }
 
@@ -183,19 +183,19 @@ def test_dispatch_qrels_mode_end_to_end_then_analysis(catalog, tmp_path):
     methods = build_methods(
         catalog, encoder=FakeEncoder(), scorer=FakeScorer(), llm=FakeLLM(tag_reply),
         dense_rep=TitleDescription(), bm25_rep=TitleDescription(), rerank_rep=TitleDescription(),
-        only=("rerank", "qam_tags_hard", "qam_tags_soft"),
+        only=("rerank", "rerank_hard", "rerank_soft"),
     )
     cfg = qrels_cfg(tmp_path)
     out = run_evaluation(cfg, catalog, methods, llm=None, config_name="x", verbose=False)
     kinds = {n: d["kind"] for n, d in out.report["meta"]["filtering"].items()}
-    assert kinds == {"rerank": "none", "qam_tags_hard": "hard", "qam_tags_soft": "soft"}
+    assert kinds == {"rerank": "none", "rerank_hard": "hard", "rerank_soft": "soft"}
     assert out.out_dir == tmp_path / "res" and (out.out_dir / "summary.json").exists()
     text = format_outcome(out)
-    assert "P@1" in text and "nDCG@3" in text and "qam_tags_hard" in text
+    assert "P@1" in text and "nDCG@3" in text and "rerank_hard" in text
 
     report, filtering = run_analysis(cfg, k=3, ref="rerank")
-    assert "reference = rerank" in report and "qam_tags_soft" in report
-    assert filtering["qam_tags_hard"]["kind"] == "hard"
+    assert "reference = rerank" in report and "rerank_soft" in report
+    assert filtering["rerank_hard"]["kind"] == "hard"
     suffixed = run_evaluation(cfg, catalog, methods, llm=None, out_suffix="_b", verbose=False)
     assert suffixed.out_dir.name == "res_b"
     limited = run_evaluation(cfg, catalog, methods, llm=None, limit=1, verbose=False)
@@ -218,7 +218,7 @@ def test_eval_mode_defaults_and_validation(tmp_path):
     with pytest.raises(SystemExit):
         eval_mode({"eval": {"mode": "magic"}})
     assert default_methods({"eval": {}}) == ("keyword", "semantic", "rerank", "hybrid", "qam")
-    assert default_methods(qrels_cfg(tmp_path)) == ("rerank", "qam_tags_hard")
+    assert default_methods(qrels_cfg(tmp_path)) == ("rerank", "rerank_hard")
     assert results_dir(qrels_cfg(tmp_path), out_suffix="_x").name == "res_x"
 
 

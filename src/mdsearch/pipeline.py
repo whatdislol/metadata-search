@@ -1,7 +1,8 @@
-"""One configurable search pipeline: [parse] -> [filter] -> first stage -> [rerank].
+"""One configurable search pipeline: [parse] -> [hard filter] -> first stage -> [rerank] -> [soft filter].
 
-All five methods compared in the QAM replication (keyword, semantic, rerank, hybrid, qam)
-are instances of this class with different parts plugged in.
+The five methods of the QAM replication (keyword, semantic, rerank, hybrid, qam) and their LLM
+preprocessing variants (tag filters, query expansion) are instances of this class with different
+parts plugged in.
 """
 
 from __future__ import annotations
@@ -106,24 +107,28 @@ class SearchPipeline:
 
         if parsed is not None and parsed.expansion:
             semantic_q = f"{semantic_q}. {parsed.expansion}"  # query expansion; reranker still sees `query`
+        soft = boost is not None and self.tag_matcher.mode == "soft"
         raw = self.first_stage.scores(semantic_q, mask)
-        if boost is not None and self.reranker is None:  # no second stage: the first stage decides the order
-            raw = raw + self.tag_matcher.weight * boost
         scores = np.where(mask, raw, -np.inf)
-        depth = self.rerank_depth if self.reranker is not None else k
+        # a soft filter reorders a candidate list, so without a second stage it still needs one longer than k
+        depth = self.rerank_depth if self.reranker is not None or soft else k
         order = np.argsort(-scores, kind="stable")[: max(depth, k)]
         order = order[np.isfinite(scores[order])]
 
         if self.reranker is not None and len(order):
             docs = [self.rerank_text(self.catalog.products[i]) for i in order]
             # the cross-encoder sees the FULL original query, as in the paper
-            ce = np.asarray(self.reranker.score(query, docs), dtype=float)
-            if boost is not None:  # soft tag filter: blend the tag similarity into the score that decides the order
-                ce = _z(ce) + self.tag_matcher.weight * _z(boost[order])
-            resort = np.argsort(-ce, kind="stable")
-            order, final = order[resort], ce[resort]
+            ranking = np.asarray(self.reranker.score(query, docs), dtype=float)
         else:
-            final = scores[order]
+            ranking = scores[order]  # the first stage decides the order
+        if soft and len(order):
+            # soft tag filter: blend the tag similarity into the score that decides the order
+            ranking = _z(ranking) + self.tag_matcher.weight * _z(boost[order])
+        if self.reranker is not None or soft:
+            resort = np.argsort(-ranking, kind="stable")
+            order, final = order[resort], ranking[resort]
+        else:
+            final = ranking
 
         hits = [
             Hit(self.catalog.ids[i], float(s)) for i, s in zip(order[:k], final[:k])

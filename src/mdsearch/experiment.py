@@ -54,7 +54,7 @@ def make_methods(
     only: tuple[str, ...] | None = None,
 ) -> dict[str, SearchPipeline]:
     rep, enc, ret = cfg["representation"], cfg["encoders"], cfg["retrieval"]
-    tags = ret.get("tags", {})  # settings for the generated-tag method (qam_tags)
+    tags = ret.get("tags", {})  # settings for the _hard / _soft tag variants
     max_chars = rep.get("max_chars", 2000)
     return build_methods(
         catalog,
@@ -71,7 +71,6 @@ def make_methods(
         rrf_k=ret.get("rrf_k", 60),
         embedding_cache=resolve_path(enc["embedding_cache"]) if enc.get("embedding_cache") else None,
         only=only,
-        tag_mode=tags.get("mode", "filter"),
         tag_top_frac=tags.get("top_frac", 0.3),
         tag_weight=tags.get("weight", 0.5),
         tag_kinds=_tag_kinds(tags.get("kinds")),

@@ -23,7 +23,6 @@ retrieval:
   rerank_depth: 100
   rrf_k: 60
   tags:                      # method "qam_tags": LLM-generated free-form tags matched by text
-    mode: filter             # filter = keep top_frac of the pool per tag; soft = blend weight * similarity into the final score
     top_frac: 0.3
     weight: 0.5
 
@@ -36,7 +35,7 @@ queries:
 
 eval:
   mode: llm_judge          # synthetic queries (script 03) judged by an LLM; qrels = human judgments
-  methods: [keyword, semantic, rerank, hybrid, qam]   # add qam_tags_hard, qam_tags_soft to compare tags
+  methods: [keyword, semantic, rerank, hybrid, qam, rerank_soft, rerank_hard, qam_soft, qam_expand, qam_soft_expand]
   ks: [3, 5, 10]
   price_tol: 0.2             # paper: 20% slack on price / rating when judging
   rating_tol: 0.2

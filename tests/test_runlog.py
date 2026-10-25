@@ -53,10 +53,10 @@ def test_describe_methods_over_built_methods(catalog):
     methods = build_methods(
         catalog, encoder=FakeEncoder(), scorer=FakeScorer(), llm=FakeLLM(),
         dense_rep=TitleDescription(), bm25_rep=TitleDescription(), rerank_rep=TitleDescription(),
-        only=("rerank", "qam", "qam_tags"), tag_mode="soft",
+        only=("rerank", "qam", "rerank_soft"),
     )
     kinds = {n: d["kind"] for n, d in describe_methods(methods).items()}
-    assert kinds == {"rerank": "none", "qam": "hard", "qam_tags": "soft"}
+    assert kinds == {"rerank": "none", "qam": "hard", "rerank_soft": "soft"}
 
 
 def test_record_run_saves_output_and_filtering(tmp_path, capsys):

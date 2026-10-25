@@ -1,13 +1,9 @@
 """Step 2: try methods on a few queries of any dataset and see what each one did.
 
     python scripts/02_search.py --config qam_toys -q "LEGO set for a 6 year old under 40"
-    python scripts/02_search.py --config trec_product -q "waterproof phone case" --methods rerank,qam_tags_hard,qam_tags_soft
+    python scripts/02_search.py --config trec_product -q "waterproof phone case" --methods rerank,rerank_hard,rerank_soft
     python scripts/02_search.py -q "creative building set" --methods rerank --brand LEGO --price-max 40 --age-max 8
 
---methods: keyword, semantic, rerank, hybrid, qam (fixed fields, needs structured metadata),
-           qam_tags_hard / qam_tags_soft / qam_tags (LLM-generated tags) and an `_expand` suffix for query
-           expansion, e.g. qam_expand, rerank_expand (naming scheme at the top of src/mdsearch/methods.py). Default: eval.methods of the config.
-Methods that use an LLM (qam*) need a configured provider; the others run offline.
 
 Explicit filters (--brand --price-min --price-max --rating-min --age-min --age-max) add a second
 run of every plain ranker (keyword / semantic / rerank / hybrid) with those hard filters, so you see

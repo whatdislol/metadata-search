@@ -2,7 +2,7 @@
 
     python scripts/04_evaluate.py --config qam_toys [--style specific|broad]
     python scripts/04_evaluate.py --config trec_product
-    python scripts/04_evaluate.py --config qam_toys --methods rerank,qam,qam_tags_hard,qam_tags_soft --out-suffix _tags
+    python scripts/04_evaluate.py --config qam_toys --methods rerank,qam,rerank_hard,rerank_soft,qam_soft --out-suffix _tags
 
 How relevance is obtained depends on eval.mode in the config:
   llm_judge  queries from script 03, relevance judged by an LLM (P@k, mAP@k)

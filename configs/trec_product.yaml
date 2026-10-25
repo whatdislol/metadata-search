@@ -38,7 +38,6 @@ retrieval:
   rerank_depth: 100
   rrf_k: 60
   tags:                      # generated-tag methods: qam_tags (mode below), qam_tags_hard, qam_tags_soft
-    mode: filter             # filter = HARD (keep top_frac of the pool per tag); soft = add weight * similarity
     top_frac: 0.3
     weight: 0.5              # soft filter: z-scored tag similarity x this is added to the z-scored cross-encoder score
     kinds: null              # which tags a tag filter uses: null = all, a list of roles, or 'attributes'
@@ -47,7 +46,7 @@ retrieval:
 
 eval:
   mode: qrels                # human judgments from script 01; no LLM judge
-  methods: [keyword, semantic, rerank, hybrid, rerank_expand, qam_tags_hard, qam_tags_hard_expand, qam_tags_soft, qam_tags_soft_expand]
+  methods: [keyword, semantic, rerank, hybrid, keyword_soft, semantic_soft, rerank_soft, hybrid_soft, rerank_hard, hybrid_hard, rerank_expand, hybrid_expand, rerank_soft_expand, hybrid_soft_expand]
   ks: [5, 10, 20]
   rel_threshold: 1
   out_dir: results/trec_product
