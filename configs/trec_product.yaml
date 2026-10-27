@@ -48,7 +48,7 @@ retrieval:
 
 eval:
   mode: qrels                # human judgments from script 01; no LLM judge
-  methods: [keyword, semantic, rerank, hybrid, keyword_soft, semantic_soft, rerank_soft, hybrid_soft, rerank_hard, hybrid_hard, rerank_expand, hybrid_expand, rerank_soft_expand, hybrid_soft_expand]
+  methods: [keyword, semantic, rerank, hybrid, qam, keyword_soft, semantic_soft, rerank_soft, hybrid_soft, qam_soft, keyword_soft_expand, semantic_soft_expand, rerank_soft_expand, hybrid_soft_expand, qam_soft_expand]
   ks: [5, 10, 20]
   rel_threshold: 1
   out_dir: results/trec_product
