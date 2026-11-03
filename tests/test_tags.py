@@ -1,0 +1,430 @@
+from __future__ import annotations
+
+import json
+
+import numpy as np
+import pytest
+from conftest import FakeEncoder, FakeLLM, FakeScorer
+from mdsearch.filtering.tag_matcher import TagMatcher
+from mdsearch.methods import ALL_METHODS, build_methods, parse_method, uses_llm
+from mdsearch.pipeline import SearchPipeline
+from mdsearch.query.schema import ParsedQuery, Tag
+from mdsearch.query.tag_parser import TagParser
+from mdsearch.rank import DenseRetriever
+from mdsearch.rank.bm25 import BM25Retriever
+from mdsearch.rank.fusion import HybridRetriever
+from mdsearch.representation import TitleDescription
+
+
+def reply(**kw):
+    return lambda p, s, sc: json.dumps(kw)
+
+
+def test_tag_parser_returns_generated_tags():
+    llm = FakeLLM(reply(
+        semantic_text="building set",
+        tags=[{"text": "LEGO", "kind": "brand"}, {"text": " for  ages 5 to 8 ", "kind": "audience"}],
+    ))
+    parsed = TagParser(llm).parse("LEGO building set for ages 5 to 8")
+    assert parsed.semantic_text == "building set"
+    assert [t.text for t in parsed.tags] == ["LEGO", "for ages 5 to 8"]
+    assert parsed.filters.is_empty()
+
+
+def test_tag_parser_dedupes_caps_and_fills_empty_semantic_text():
+    tags = [{"text": "a"}, {"text": "A"}, {"text": ""}] + [{"text": f"t{i}"} for i in range(10)]
+    parsed = TagParser(FakeLLM(reply(semantic_text="  ", tags=tags)), max_tags=4).parse("q")
+    assert parsed.semantic_text == "q"
+    assert [t.text for t in parsed.tags] == ["a", "t0", "t1", "t2"]  # case-dup and empty dropped
+
+
+def test_tag_parser_falls_back_on_garbage_and_counts_it():
+    parser = TagParser(FakeLLM(lambda p, s, sc: "garbage"))
+    assert parser.parse("monopoly") == ParsedQuery(semantic_text="monopoly")
+    assert parser.n_failures == 1
+
+
+def test_tag_parser_parse_many_matches_parse():
+    llm = FakeLLM(reply(semantic_text="x", tags=[{"text": "cozy"}]))
+    parser = TagParser(llm)
+    assert parser.parse_many(["a", "b"]) == [parser.parse("a"), parser.parse("b")]
+
+
+def make_dense(catalog):
+    return DenseRetriever.build(catalog.ids, catalog.texts(TitleDescription()), FakeEncoder())
+
+
+def test_filter_mode_keeps_top_fraction_of_pool(catalog):
+    m = TagMatcher(make_dense(catalog), mode="filter", top_frac=0.4)
+    out = m.apply([Tag(text="LEGO racing car")], np.ones(len(catalog), dtype=bool))
+    assert out.mask.sum() == 2  # ceil(0.4 * 5)
+    assert out.mask[catalog.index("b")]
+    assert out.steps[0].removed == 3 and out.steps[0].name == "tag:LEGO racing car"
+    assert not out.boost.any()
+
+
+def test_filter_mode_respects_existing_mask_and_each_tag_narrows(catalog):
+    m = TagMatcher(make_dense(catalog), mode="filter", top_frac=0.5)
+    start = np.array([True, True, True, False, False])
+    out = m.apply([Tag(text="board game"), Tag(text="Monopoly")], start)
+    assert out.mask.sum() < start.sum() and not (out.mask & ~start).any()
+    assert out.mask[catalog.index("c")]
+
+
+def test_filter_mode_never_empties_a_nonempty_pool(catalog):
+    m = TagMatcher(make_dense(catalog), mode="filter", top_frac=0.01)
+    out = m.apply([Tag(text="x"), Tag(text="y"), Tag(text="z")], np.ones(len(catalog), dtype=bool))
+    assert out.mask.sum() >= 1
+
+
+def test_soft_mode_removes_nothing_and_boosts_matching_products(catalog):
+    m = TagMatcher(make_dense(catalog), mode="soft", weight=1.0)
+    start = np.ones(len(catalog), dtype=bool)
+    out = m.apply([Tag(text="soft rattle babies")], start)
+    assert out.mask.all() and out.steps == []
+    assert out.boost[catalog.index("d")] == out.boost.max()
+
+
+def test_no_tags_is_a_noop(catalog):
+    m = TagMatcher(make_dense(catalog))
+    start = np.ones(len(catalog), dtype=bool)
+    out = m.apply([], start)
+    assert out.mask.all() and not out.boost.any()
+
+
+def test_invalid_settings_rejected(catalog):
+    with pytest.raises(ValueError):
+        TagMatcher(make_dense(catalog), mode="hard")
+    with pytest.raises(ValueError):
+        TagMatcher(make_dense(catalog), top_frac=0)
+
+
+def tag_pipeline(catalog, **kw):
+    dense = make_dense(catalog)
+    llm = FakeLLM(reply(semantic_text="toy", tags=[{"text": "LEGO racing car", "kind": "x"}]))
+    return SearchPipeline(
+        "qam_tags", catalog, dense, parser=TagParser(llm),
+        tag_matcher=TagMatcher(dense, **kw),
+    )
+
+
+def test_pipeline_filters_by_tags_and_reports_steps(catalog):
+    res = tag_pipeline(catalog, mode="filter", top_frac=0.4).search("fast LEGO car", k=5)
+    assert res.n_candidates == 2 and len(res.hits) == 2
+    assert res.filter_report.remaining == 2
+    assert [s.name for s in res.filter_report.steps] == ["tag:LEGO racing car"]
+    assert res.parsed.tags[0].kind == "x"
+    assert "tags" in res.to_dict()["parsed"]
+
+
+def test_pipeline_soft_mode_keeps_every_candidate(catalog):
+    res = tag_pipeline(catalog, mode="soft").search("fast LEGO car", k=5)
+    assert res.n_candidates == len(catalog) and len(res.hits) == len(catalog)
+
+
+def test_pipeline_without_tags_matches_plain_search(catalog):
+    dense = make_dense(catalog)
+    plain = SearchPipeline("p", catalog, dense)
+    tagged = SearchPipeline("t", catalog, dense, tag_matcher=TagMatcher(dense))
+    q = "board game"
+    assert [h.id for h in plain.search(q, k=5).hits] == [h.id for h in tagged.search(q, k=5).hits]
+
+
+def test_tag_variants_are_opt_in(catalog):
+    common = dict(
+        encoder=FakeEncoder(), scorer=FakeScorer(), llm=FakeLLM(reply(semantic_text="toy", tags=[])),
+        dense_rep=TitleDescription(), bm25_rep=TitleDescription(), rerank_rep=TitleDescription(),
+    )
+    assert "rerank_hard" not in ALL_METHODS
+    assert list(build_methods(catalog, **common)) == list(ALL_METHODS)
+    got = build_methods(catalog, only=("rerank", "rerank_hard"), **common)
+    assert list(got) == ["rerank", "rerank_hard"]
+    assert got["rerank_hard"].search("LEGO", k=3).hits
+    with pytest.raises(ValueError):
+        build_methods(catalog, **{**common, "llm": None}, only=("rerank_hard",))
+
+
+def test_filter_mode_keeps_exactly_the_top_fraction_even_with_tied_scores(catalog):
+    class Tied:  # every product has the same similarity to every tag
+        def scores(self, text, mask=None):
+            return np.zeros(len(catalog))
+
+    m = TagMatcher(Tied(), mode="filter", top_frac=0.4)
+    out = m.apply([Tag(text="x")], np.ones(len(catalog), dtype=bool))
+    assert out.mask.sum() == 2 and out.steps[0].removed == 3
+    assert list(np.flatnonzero(out.mask)) == [0, 1]  # ties go to catalog order
+
+
+def test_cached_scorer_only_scores_unseen_pairs_and_keeps_order(tmp_path):
+    from mdsearch.rank.cross_encoder import CachedScorer
+
+    class Counting:
+        name = "m"
+        max_length = 512
+        calls = 0
+
+        def score(self, query, docs):
+            Counting.calls += len(docs)
+            return [float(len(d)) for d in docs]
+
+    cs = CachedScorer(Counting(), tmp_path / "ce.sqlite")
+    assert cs.score("q", ["aa", "b", "cccc"]) == [2.0, 1.0, 4.0]
+    assert cs.score("q", ["cccc", "dd", "aa"]) == [4.0, 2.0, 2.0]  # only "dd" is new
+    assert Counting.calls == 4 and cs.hits == 2
+    assert CachedScorer(Counting(), tmp_path / "ce.sqlite").score("q", ["b"]) == [1.0]  # persisted
+    assert Counting.calls == 4
+    assert cs.score("other query", ["b"]) == [1.0] and Counting.calls == 5  # keyed by query too
+
+
+def test_dense_cache_key_includes_truncation_length():
+    from mdsearch.rank.dense import SentenceTransformerEncoder as E
+
+    assert E("m").cache_key == "m" and E("m", max_seq_length=256).cache_key == "m@256"
+
+
+def test_kind_labels_are_normalised_and_prompt_lists_the_roles():
+    from mdsearch.query.schema import TAG_KINDS
+    from mdsearch.query.tag_parser import TAG_SYSTEM
+
+    assert Tag(text="red", kind=" Color ").kind == "color" and Tag(text="x", kind="Product Type").kind == "product_type"
+    assert all(k in TAG_SYSTEM for k in TAG_KINDS) and "{kinds}" not in TAG_SYSTEM
+
+
+def test_matcher_applies_only_tags_of_the_requested_kinds(catalog):
+    m = TagMatcher(make_dense(catalog), mode="filter", top_frac=0.4, kinds=["brand"])
+    ones = np.ones(len(catalog), dtype=bool)
+    out = m.apply([Tag(text="LEGO racing car", kind="product_type")], ones)
+    assert out.mask.all() and out.steps == []  # restating the product type does nothing
+    out = m.apply([Tag(text="LEGO racing car", kind="brand"), Tag(text="x", kind="product_type")], ones)
+    assert out.mask.sum() == 2 and [s.name for s in out.steps] == ["tag:LEGO racing car"]
+
+
+
+def test_tag_report_splits_queries_by_attribute_tags():
+    from mdsearch.eval.analysis import tag_report
+
+    def row(method, qid, tags, ndcg):
+        return {"method": method, "query_id": qid, "nDCG@10": ndcg, "n_candidates": 1,
+                "parsed": {"semantic_text": "s", "tags": tags}}
+
+    rows = []
+    for q, tags in {"1": [{"text": "red", "kind": "color"}], "2": [{"text": "wig", "kind": "product_type"}]}.items():
+        rows += [row("rerank", q, tags, 0.5), row("tags", q, tags, 0.6 if q == "1" else 0.5)]
+    text = tag_report(rows, k=10, ref="rerank")
+    assert "1 queries have an attribute tag" in text and "-- with attribute tag: 1 queries" in text
+    assert "-- without: 1 queries" in text and "color 1" in text and "product_type 1" in text
+
+
+def test_expansion_is_parsed_and_added_to_the_first_stage_query_only(catalog):
+    llm = FakeLLM(reply(semantic_text="racing car", tags=[], expansion="  toy  vehicle for racing  "))
+    parsed = TagParser(llm, expand=True).parse("fast car")
+    assert parsed.expansion == "toy vehicle for racing"
+    assert "expansion" in TagParser(llm, expand=True).system and "expansion" not in TagParser(llm).system
+
+    seen = {"first": [], "rerank": []}
+
+    class Spy:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def scores(self, q, mask=None):
+            seen["first"].append(q)
+            return self.inner.scores(q, mask)
+
+    class SpyScorer(FakeScorer):
+        def score(self, q, docs):
+            seen["rerank"].append(q)
+            return super().score(q, docs)
+
+    pipe = SearchPipeline("e", catalog, Spy(make_dense(catalog)), parser=TagParser(llm, expand=True), reranker=SpyScorer())
+    pipe.search("fast car", k=3)
+    assert seen["first"] == ["fast car. toy vehicle for racing"] and seen["rerank"] == ["fast car"]
+
+
+
+
+COMMON = lambda llm: dict(
+    encoder=FakeEncoder(), scorer=FakeScorer(), llm=llm,
+    dense_rep=TitleDescription(), bm25_rep=TitleDescription(), rerank_rep=TitleDescription(),
+)
+
+
+def test_method_names_are_a_base_method_plus_optional_preprocessing():
+    from mdsearch.methods import parse_method as p
+
+    assert p("rerank") == ("rerank", None, False) and p("keyword_expand") == ("keyword", None, True)
+    assert p("rerank_hard") == ("rerank", "filter", False)
+    assert p("hybrid_soft_expand") == ("hybrid", "soft", True)
+    assert p("qam_soft") == ("qam", "soft", False) and p("qam_soft_expand") == ("qam", "soft", True) and p("semantic_hard_expand") == ("semantic", "filter", True)
+    for bad in ("qam_expand_expand", "rerank_medium", "rerank_expand_hard", "qam_tags_hard", "hard", "rerank_hard_hard", "qam_hard", "qam_hard_expand"):
+        assert p(bad) is None
+
+
+def test_old_tag_method_names_point_to_their_new_names(catalog):
+    with pytest.raises(ValueError, match="renamed: use rerank_soft_expand"):
+        build_methods(catalog, only=("qam_tags_soft_expand",), **COMMON(FakeLLM(reply(semantic_text="t"))))
+
+
+def test_every_base_method_can_take_every_preprocessing_step(catalog):
+    from mdsearch.runlog import describe_filtering, filtering_label
+
+    llm = FakeLLM(lambda p, s, sc: json.dumps({
+        "semantic_text": "toy", "filters": {"brand": "LEGO"}, "expansion": "building bricks",
+        "tags": [{"text": "LEGO", "kind": "brand"}],
+    }))
+    names = tuple(f"{b}{f}{e}" for b in ("keyword", "semantic", "rerank", "hybrid", "qam")
+                  for f in ("", "_hard", "_soft") for e in ("", "_expand") if not (b == "qam" and f == "_hard"))
+    got = build_methods(catalog, only=names, **COMMON(llm))
+    assert list(got) == list(names)  # in the order asked for
+    for n, pipe in got.items():
+        base, mode, expand = parse_method(n)
+        assert (pipe.tag_matcher.mode if pipe.tag_matcher else None) == mode
+        assert (pipe.metadata_filter is not None) == (base == "qam")
+        assert (pipe.reranker is not None) == (base in ("rerank", "qam"))
+        assert (pipe.parser is not None) == uses_llm(n) and (pipe.parser.expand if pipe.parser else False) == expand
+        assert pipe.search("lego", k=3).hits  # every combination runs
+    assert filtering_label(describe_filtering(got["rerank_expand"])) == "none; query expansion"
+    assert filtering_label(describe_filtering(got["qam_expand"])).startswith("hard (metadata fields")
+    assert filtering_label(describe_filtering(got["qam_expand"])).endswith("query expansion)")
+    assert describe_filtering(got["qam_soft"])["kind"] == "hard+soft"
+    assert describe_filtering(got["keyword_hard"])["kind"] == "hard"
+    assert "query expansion" not in filtering_label(describe_filtering(got["rerank_soft"]))
+    assert got["rerank_expand"].search("lego", k=3).n_candidates == len(catalog)  # no filtering at all
+    assert got["qam_expand"].search("lego", k=3).n_candidates < len(catalog)  # the fixed-field hard filter
+    assert got["keyword_hard"].search("lego", k=3).n_candidates < len(catalog)  # hard works without a reranker
+    assert got["qam_soft"].search("lego", k=3).n_candidates == got["qam"].search("lego", k=3).n_candidates
+    with pytest.raises(ValueError, match="two hard filters"):
+        build_methods(catalog, only=("qam_hard",), **COMMON(llm))
+    assert got["qam_soft"].parser.fields.expand is False and got["qam_soft_expand"].parser.fields.expand
+    with pytest.raises(ValueError, match="Unknown method"):
+        build_methods(catalog, only=("rerank", "rerank_attr"), **COMMON(llm))
+
+
+def test_soft_filter_reorders_a_pool_without_a_second_stage(catalog):
+    dense = make_dense(catalog)
+    llm = FakeLLM(reply(semantic_text="toy", tags=[{"text": "soft rattle babies", "kind": "feature"}]))
+    for first in (dense, HybridRetriever([BM25Retriever(catalog.ids, catalog.texts(TitleDescription())), dense])):
+        plain = SearchPipeline("p", catalog, first)
+        soft = SearchPipeline("s", catalog, first, parser=TagParser(llm), tag_matcher=TagMatcher(dense, mode="soft", weight=100.0))
+        res = soft.search("toy", k=5)
+        assert res.hits[0].id == "d" and res.n_candidates == len(catalog)  # tags decide; nothing removed
+        assert len(plain.search("toy", k=5).hits) == len(res.hits) == 5
+
+
+def test_fixed_field_parser_returns_an_expansion_only_when_asked():
+    from mdsearch.query.parser import QueryParser
+
+    llm = FakeLLM(reply(semantic_text="bricks", filters={"brand": "LEGO"}, expansion="  building   bricks "))
+    on, off = QueryParser(llm, expand=True), QueryParser(llm)
+    assert on.parse("lego bricks").expansion == "building bricks" and off.parse("lego bricks").expansion == ""
+    assert on.parse_many(["a"])[0].expansion == "building bricks" and off.parse_many(["a"])[0].expansion == ""
+    assert "expansion" in on.system and "expansion" not in off.system
+
+
+def test_tag_kinds_setting():
+    from mdsearch.experiment import _tag_kinds
+    from mdsearch.query.schema import ATTRIBUTE_KINDS
+
+    assert _tag_kinds(None) is None and _tag_kinds("all") is None
+    assert _tag_kinds("attributes") == ATTRIBUTE_KINDS and _tag_kinds(["brand"]) == ("brand",)
+
+
+def test_uses_llm_covers_rerank_expand():
+    from mdsearch.methods import uses_llm
+
+    for n in ("qam", "qam_expand", "rerank_hard", "hybrid_soft_expand", "rerank_expand", "keyword_hard", "qam_soft"):
+        assert uses_llm(n)
+    for n in ("keyword", "semantic", "rerank", "hybrid"):
+        assert not uses_llm(n)
+
+
+
+def test_relevant_retention_measures_what_a_hard_filter_removed(catalog, tmp_path):
+    from mdsearch.eval.analysis import analyze_qrels
+    from mdsearch.eval.qrels_eval import evaluate_qrels
+
+    hard = tag_pipeline(catalog, mode="filter", top_frac=0.4)  # keeps 2 of the 5 products
+    soft = tag_pipeline(catalog, mode="soft")
+    qrels = {"q1": {pid: 1 for pid in catalog.ids[:4]}}  # 4 relevant products
+    evaluate_qrels({"hard": hard, "soft": soft}, {"q1": "fast LEGO car"}, qrels, ks=(1, 3),
+                   out_dir=tmp_path, verbose=False)
+    import json as _json
+
+    rows = {r["method"]: r for r in map(_json.loads, (tmp_path / "per_query.jsonl").read_text().splitlines())}
+    assert rows["soft"]["rel_retained"] == 1.0
+    assert 0 < rows["hard"]["rel_retained"] < 1.0
+    text = analyze_qrels(list(rows.values()), k=3, ref="soft")
+    assert "rel kept" in text and "100.0%" in text
+
+
+def test_soft_tags_are_blended_into_the_final_score_so_they_can_change_the_order(catalog):
+    from mdsearch.runlog import describe_filtering, filtering_label
+
+    class Decisive(FakeScorer):  # the cross-encoder strongly prefers the LEGO bricks product
+        def score(self, q, docs):
+            return [1.0 if "creative bricks" in d else 0.0 for d in docs]
+
+    dense = make_dense(catalog)
+    llm = FakeLLM(reply(semantic_text="toy", tags=[{"text": "soft rattle babies", "kind": "feature"}]))
+
+    def pipe(weight):
+        return SearchPipeline(
+            "s", catalog, dense, parser=TagParser(llm), tag_matcher=TagMatcher(dense, mode="soft", weight=weight),
+            reranker=Decisive(),
+        )
+
+    assert pipe(0.0).search("toy", k=5).hits[0].id == "a"  # no weight: the cross-encoder decides
+    big = pipe(100.0).search("toy", k=5)
+    assert big.hits[0].id == "d" and big.n_candidates == len(catalog)  # a large weight lets the tags decide
+    assert "boost on the final score, weight 100.0" in filtering_label(describe_filtering(pipe(100.0)))
+
+
+def test_soft_tags_without_a_second_stage_fall_back_to_the_first_stage_score(catalog):
+    from mdsearch.runlog import describe_filtering, filtering_label
+
+    dense = make_dense(catalog)
+    llm = FakeLLM(reply(semantic_text="toy", tags=[{"text": "soft rattle babies", "kind": "feature"}]))
+    p = SearchPipeline("s", catalog, dense, parser=TagParser(llm), tag_matcher=TagMatcher(dense, mode="soft", weight=100.0))
+    assert p.search("toy", k=5).hits[0].id == "d"
+    assert "score boost" in filtering_label(describe_filtering(p)) and "final score" not in filtering_label(describe_filtering(p))
+
+
+def test_only_the_fixed_field_qam_searches_the_llms_filter_free_text(catalog):
+    from mdsearch.filtering.metadata_filter import MetadataFilter
+    from mdsearch.query.parser import QueryParser
+
+    seen = []
+
+    class Spy:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def scores(self, q, mask=None):
+            seen.append(q)
+            return self.inner.scores(q, mask)
+
+    dense = Spy(make_dense(catalog))
+    llm = FakeLLM(reply(semantic_text="bricks", filters={"brand": "LEGO"}, tags=[], expansion="building toy"))
+    SearchPipeline("tags", catalog, dense, parser=TagParser(llm)).search("red lego bricks", k=3)
+    SearchPipeline("tags+", catalog, dense, parser=TagParser(llm, expand=True)).search("red lego bricks", k=3)
+    SearchPipeline("qam", catalog, dense, parser=QueryParser(llm), metadata_filter=MetadataFilter(catalog)).search("red lego bricks", k=3)
+    SearchPipeline("qam+", catalog, dense, parser=QueryParser(llm, expand=True),
+                   metadata_filter=MetadataFilter(catalog)).search("red lego bricks", k=3)
+    assert seen == ["red lego bricks", "red lego bricks. building toy", "bricks", "bricks. building toy"]
+
+
+def test_method_catalog_lists_every_valid_name_and_describes_it():
+    from mdsearch.methods import BASE_METHODS, describe_method, method_catalog
+
+    names = method_catalog()
+    assert len(names) == len(set(names)) == 28 and "qam_hard" not in names and "qam_soft_expand" in names
+    assert [n for n in names if "_" not in n] == list(BASE_METHODS)
+    for n in names:
+        d = describe_method(n)
+        assert d["method"] == n and (d["llm"] == "-") == (not uses_llm(n))
+        assert ("cross-encoder" in d["second_stage"]) == (parse_method(n)[0] in ("rerank", "qam"))
+    assert describe_method("rerank")["filter"] == "none"
+    assert describe_method("qam_soft")["filter"] == "hard on fixed fields + soft on tags (score boost)"
+    assert describe_method("hybrid_soft_expand")["first_stage"] == "BM25 + dense (RRF) on your query + expansion"
+    with pytest.raises(ValueError, match="Unknown method"):
+        describe_method("qam_hard")

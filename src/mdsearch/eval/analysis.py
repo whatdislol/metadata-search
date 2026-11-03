@@ -1,11 +1,7 @@
-"""Step 5b: look inside the evaluation results (no LLM, no models, runs in seconds).
+"""Look inside evaluation results (no LLM, no models; runs in seconds). Used by scripts/05_analyze.py.
 
-    python scripts/07_analyze.py [--style specific|broad] [--k 5] [--ref qam] [--misses 15] [--parse-errors 15]
+llm_judge results (synthetic queries with known constraints):
 
---misses N also lists N queries where the reference method lacks the source product in its top-10,
-with the query, the true and parsed constraints, and whether the parsed filters exclude the source.
-
-Prints, per method (top-k lists):
   * where the non-relevant results come from: violate a hard constraint vs fit the constraints but
     not the subjective part of the query (judged by the LLM)
   * precision among results that satisfy the hard constraints (relevant / (relevant + soft fail)):
@@ -15,23 +11,26 @@ Prints, per method (top-k lists):
   * paired bootstrap of P@k(ref) - P@k(method) over queries (is the gap bigger than query noise?)
   * how many queries have any relevant result at all, and how many relevant products the union of
     all methods found per query (a ceiling for P@k)
+
+qrels results (datasets with human judgments): see analyze_qrels.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
 
-from mdsearch.config import load_experiment_config, resolve_path
-from mdsearch.data.schema import load_products
-from mdsearch.eval.querygen import load_queries
-from mdsearch.filtering import satisfies
-from mdsearch.query.schema import Filters
-from mdsearch.experiment import style_paths
+from ..config import resolve_path
+from ..data.evalset import EvalSet
+from ..data.schema import load_products
+from ..experiment import style_paths
+from ..filtering import satisfies
+from ..query.schema import Filters
+from .dispatch import eval_mode, results_dir
+from .querygen import load_queries
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -248,27 +247,165 @@ def explain_parse_errors(per_query: list[dict], queries: list, ref: str, show: i
     return "\n".join([head] + lines[:show])
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="qam_toys")
-    ap.add_argument("--style", default="specific", choices=["specific", "broad"])
-    ap.add_argument("--k", type=int, default=5)
-    ap.add_argument("--ref", default="qam")
-    ap.add_argument("--misses", type=int, default=0, help="list N source-product misses of --ref")
-    ap.add_argument("--parse-errors", type=int, default=0, help="list N queries whose constraints --ref's parser missed")
-    args = ap.parse_args()
-    cfg = load_experiment_config(args.config)
-    queries_path, d = style_paths(cfg, args.style)
-    queries = load_queries(queries_path) if queries_path.exists() else None
-    print(f"query style: {args.style}   results: {d}\n")
+def analyze_qrels(per_query: list[dict], k: int = 10, ref: str | None = None, metric: str = "nDCG") -> str:
+    """Per-method summary for qrels evaluations, plus a paired bootstrap against `ref`.
+
+    `pool` is how many products were left after filtering (the whole pool for unfiltered methods), so
+    it shows how aggressive a hard filter was. "rel kept" is the average share of a query's relevant
+    products that survived the filter (100% = the filter removed no relevant product). "no relevant" counts queries with no relevant product
+    in the top k."""
+    by_method: dict[str, dict[str, dict]] = defaultdict(dict)
+    for r in per_query:
+        by_method[r["method"]][r["query_id"]] = r
+    methods = list(by_method)
+    if not methods:
+        return "no results"
+    ref = ref if ref in by_method else methods[0]
+    pk, mk, rk = f"P@{k}", f"{metric}@{k}", f"R@{k}"
+    sample = next(iter(by_method[ref].values()))
+    for key in (pk, mk, rk):
+        if key not in sample:
+            avail = sorted(x for x in sample if "@" in x)
+            raise SystemExit(f"{key} not in the results; available: {avail}")
+    qids = sorted(set.intersection(*(set(by_method[m]) for m in methods)))
+    out = [f"== {len(qids)} queries, k={k}, reference = {ref}",
+           f"{'method':16s}{pk:>9s}{mk:>11s}{rk:>9s}{'no relevant':>13s}{'pool mean':>11s}{'pool median':>13s}{'rel kept':>10s}"
+           f"   {metric}({ref}) - {metric}(method)  [95% CI]   wins/losses"]
+    for m in methods:
+        rows = [by_method[m][q] for q in qids]
+        p = np.mean([x[pk] for x in rows]) * 100
+        g = np.mean([x[mk] for x in rows]) * 100
+        rc = np.mean([x[rk] for x in rows]) * 100
+        none = sum(x[pk] == 0 for x in rows)
+        pools = np.array([x["n_candidates"] for x in rows], dtype=float)
+        diff = np.array([by_method[ref][q][mk] - by_method[m][q][mk] for q in qids])
+        if m == ref:
+            cmp = "-"
+        else:
+            lo, hi = paired_bootstrap(diff)
+            cmp = f"{diff.mean() * 100:+6.2f}  [{lo * 100:+.2f}, {hi * 100:+.2f}]   {int((diff > 0).sum())}/{int((diff < 0).sum())}"
+        kept = [x["rel_retained"] for x in rows if x.get("rel_retained") is not None]
+        kept_s = f"{np.mean(kept) * 100:9.1f}%" if kept else f"{'-':>10s}"
+        out.append(f"{m:16s}{p:8.2f}%{g:10.2f}%{rc:8.2f}%{none:13d}{pools.mean():11.0f}{np.median(pools):13.0f}{kept_s}   {cmp}")
+    return "\n".join(out)
+
+
+def tag_report(per_query: list[dict], k: int = 10, ref: str | None = None, metric: str = "nDCG",
+               attr_kinds: tuple[str, ...] | None = None, examples: int = 12) -> str:
+    """What the generated tags looked like, and results split by whether a query has attribute tags.
+
+    The tags come from the first method in the results that generated any. Attribute tags are those whose
+    role (kind) is in `attr_kinds` (default ATTRIBUTE_KINDS): brand, colour, material, size, audience,
+    price, feature. Tags that restate the product type cannot narrow anything useful."""
+    from ..query.schema import ATTRIBUTE_KINDS
+
+    attr = set(attr_kinds or ATTRIBUTE_KINDS)
+    tags_by_q: dict[str, list[dict]] = {}
+    text_by_q: dict[str, str] = {}
+    for r in per_query:
+        p = r.get("parsed")
+        if p and p.get("tags") and r["query_id"] not in tags_by_q:
+            tags_by_q[r["query_id"]] = p["tags"]
+            text_by_q[r["query_id"]] = p.get("semantic_text", "")
+    all_q = sorted({r["query_id"] for r in per_query})
+    if not tags_by_q:
+        return "no generated tags in these results"
+    kinds = Counter(t.get("kind") or "(none)" for ts in tags_by_q.values() for t in ts)
+    with_attr = {q for q, ts in tags_by_q.items() if any(t.get("kind") in attr for t in ts)}
+    out = [
+        f"== generated tags: {len(tags_by_q)} of {len(all_q)} queries got at least one tag "
+        f"({sum(len(v) for v in tags_by_q.values())} tags); {len(with_attr)} queries have an attribute tag",
+        "tag roles: " + ", ".join(f"{k_} {n}" for k_, n in kinds.most_common()),
+        "examples (semantic text | tags):",
+    ]
+    for q in sorted(tags_by_q)[:examples]:
+        out.append(f"  {q}: {text_by_q[q]!r} | " + "; ".join(f"{t['text']} [{t.get('kind') or '-'}]" for t in tags_by_q[q]))
+
+    by_method: dict[str, dict[str, dict]] = defaultdict(dict)
+    for r in per_query:
+        by_method[r["method"]][r["query_id"]] = r
+    methods = list(by_method)
+    ref = ref if ref in by_method else methods[0]
+    mk = f"{metric}@{k}"
+    if mk not in next(iter(by_method[ref].values())):
+        return "\n".join(out)
+    groups = {"with attribute tag": sorted(with_attr), "without": sorted(set(all_q) - with_attr)}
+    out.append(f"\n{metric}@{k} by query group (difference = {ref} minus method; positive = method worse)")
+    for label, qs in groups.items():
+        qs = [q for q in qs if all(q in by_method[m] for m in methods)]
+        if not qs:
+            continue
+        out.append(f"-- {label}: {len(qs)} queries")
+        for m in methods:
+            g = np.array([by_method[m][q][mk] for q in qs])
+            d = np.array([by_method[ref][q][mk] - by_method[m][q][mk] for q in qs])
+            cmp = "-" if m == ref else "{:+6.2f}  [{:+.2f}, {:+.2f}]".format(d.mean() * 100, *(x * 100 for x in paired_bootstrap(d)))
+            out.append(f"   {m:18s}{g.mean() * 100:8.2f}%   {cmp}")
+    return "\n".join(out)
+
+
+def group_report(per_query: list[dict], groups: dict[str, str], k: int = 10, ref: str | None = None,
+                 metric: str = "nDCG") -> str:
+    """Results per query group (e.g. per TREC year or kind of query): mean metric per method and, against
+    the reference method, the paired difference with a 95% bootstrap interval. Empty if there is one group."""
+    by_method: dict[str, dict[str, dict]] = defaultdict(dict)
+    for r in per_query:
+        by_method[r["method"]][r["query_id"]] = r
+    methods = list(by_method)
+    mk = f"{metric}@{k}"
+    if not methods or mk not in next(iter(by_method[methods[0]].values())):
+        return ""
+    ref = ref if ref in by_method else methods[0]
+    qids = sorted(set.intersection(*(set(by_method[m]) for m in methods)))
+    members: dict[str, list[str]] = defaultdict(list)
+    for q in qids:
+        if groups.get(q):
+            members[groups[q]].append(q)
+    if len(members) < 2:
+        return ""
+    out = [f"{metric}@{k} by query group (difference = {ref} minus method; positive = method worse)"]
+    for name in sorted(members):
+        qs = members[name]
+        out.append(f"-- {name}: {len(qs)} queries")
+        for m in methods:
+            g = np.array([by_method[m][q][mk] for q in qs])
+            d = np.array([by_method[ref][q][mk] - by_method[m][q][mk] for q in qs])
+            cmp = "-" if m == ref else "{:+6.2f}  [{:+.2f}, {:+.2f}]".format(d.mean() * 100, *(x * 100 for x in paired_bootstrap(d)))
+            out.append(f"   {m:18s}{g.mean() * 100:8.2f}%   {cmp}")
+    return "\n".join(out)
+
+
+def run_analysis(
+    cfg: dict,
+    *,
+    style: str = "specific",
+    k: int = 5,
+    ref: str = "qam",
+    misses: int = 0,
+    parse_errors: int = 0,
+    out_suffix: str = "",
+) -> tuple[str, dict]:
+    """Text report for the dataset's results (mode from eval.mode) and the filtering recorded with them."""
+    d = results_dir(cfg, style, out_suffix)
+    if not (d / "summary.json").exists():
+        raise SystemExit(f"{d / 'summary.json'} not found. Run scripts/04_evaluate.py first.")
+    meta = json.loads((d / "summary.json").read_text(encoding="utf-8")).get("meta", {})
     per_query = read_jsonl(d / "per_query.jsonl")
-    print(analyze(per_query, read_jsonl(d / "judgments.jsonl"), args.k, args.ref, queries))
-    if args.parse_errors and queries:
-        print(explain_parse_errors(per_query, queries, args.ref, show=args.parse_errors))
-    if args.misses and queries:
+    if eval_mode(cfg) == "qrels":
+        text = analyze_qrels(per_query, k, ref) + "\n\n" + tag_report(per_query, k, ref)
+        eval_set = resolve_path(cfg["dataset"]["eval_set"])
+        if eval_set.exists():
+            by_group = group_report(per_query, EvalSet.load(eval_set).groups, k, ref)
+            text += ("\n\n" + by_group) if by_group else ""
+        return f"results: {d}\n\n" + text, meta.get("filtering", {})
+
+    queries_path, _ = style_paths(cfg, style)
+    queries = load_queries(queries_path) if queries_path.exists() else None
+    parts = [f"query style: {style}   results: {d}\n",
+             analyze(per_query, read_jsonl(d / "judgments.jsonl"), k, ref, queries)]
+    if parse_errors and queries:
+        parts.append(explain_parse_errors(per_query, queries, ref, show=parse_errors))
+    if misses and queries:
         products = {p.id: p for p in load_products(resolve_path(cfg["dataset"]["processed"]))}
-        print(explain_misses(per_query, queries, products, args.ref, show=args.misses))
-
-
-if __name__ == "__main__":
-    main()
+        parts.append(explain_misses(per_query, queries, products, ref, show=misses))
+    return "\n".join(parts), meta.get("filtering", {})

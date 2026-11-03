@@ -2,18 +2,20 @@
 
 IMPORTANT: this was written from the dataset's published field list, not from the file itself.
 Column names are resolved flexibly and the text parsers below (price, age, reviews) are
-heuristics. Run scripts/01_prepare_toys.py and check the printed coverage before trusting them.
+heuristics. Run scripts/01_prepare.py --config qam_toys and check the printed coverage before trusting them.
 """
 
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from .schema import Product
+from ..config import resolve_path
+from .schema import Product, save_products
 
 _NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
 
@@ -175,3 +177,49 @@ def describe_coverage(products: list[Product]) -> dict[str, float]:
         "has_reviews": sum(bool(p.reviews) for p in products) / n,
         "avg_reviews_per_product": sum(len(p.reviews) for p in products) / n,
     }
+
+
+def diagnose_price(csv: str | Path) -> None:
+    """Split price gaps into 'cell is empty in the CSV' vs 'cell has text the parser rejects'."""
+    df = pd.read_csv(csv)
+    if "price" not in df.columns:
+        print("\nno 'price' column; columns are:", list(df.columns))
+        return
+    raw = df["price"]
+    empty = raw.isna() | raw.astype(str).str.strip().eq("")
+    unparsed = ~empty & raw.map(parse_price).isna()
+    print(f"\nprice diagnosis over {len(df)} rows:")
+    print(f"  empty in the CSV:            {int(empty.sum())}  (real missing data, not a parser bug)")
+    print(f"  non-empty but not parsed:    {int(unparsed.sum())}  (parser bug if > 0)")
+    for v, c in Counter(raw[unparsed].astype(str)).most_common(10):
+        print(f"      {c:5d} x {v!r}")
+    shapes = Counter(
+        pd.Series(raw[~empty].astype(str)).str.replace(r"\d+", "9", regex=True).head(2000)
+    )
+    print("  most common price shapes:", shapes.most_common(5))
+
+
+def prepare(cfg: dict[str, Any], *, limit: int | None = None, source: str | None = None) -> None:
+    """Parse the raw CSV named in cfg['dataset'] into the processed products file and print coverage.
+
+    Read the coverage: if brand/price/rating/min_age/reviews are mostly missing, the parsers in this
+    module do not match the real file and need adjusting.
+    """
+    d = cfg["dataset"]
+    csv = resolve_path(source or d["raw_csv"])
+    if not csv.exists():
+        raise SystemExit(
+            f"{csv} not found. Download 'Toy Products on Amazon' (PromptCloud) from Kaggle and "
+            "place amazon_co-ecommerce_sample.csv there."
+        )
+    products = load_toys_csv(csv, limit=limit)
+    out = resolve_path(d["processed"])
+    n = save_products(out, products)
+    print(f"wrote {n} products -> {out}")
+    for k, v in describe_coverage(products).items():
+        print(f"  {k:24s} {v:.3f}" if v <= 1 else f"  {k:24s} {v:.0f}")
+    diagnose_price(csv)
+    print("\nsample:")
+    for p in products[:3]:
+        print(f"  {p.title[:60]!r} brand={p.brand} price={p.price} rating={p.rating} "
+              f"min_age={p.min_age} reviews={len(p.reviews)}")

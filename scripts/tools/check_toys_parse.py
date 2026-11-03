@@ -1,10 +1,10 @@
 """Spot-check the age parser: raw text snippets next to the parsed min_age.
 
-    python scripts/check_parse.py [-n 15] [--seed 1] [--conflicts]
+    python scripts/tools/check_toys_parse.py [-n 15] [--seed 1] [--conflicts]
 
 Prints random products with the age-related text found in `product_information` and in
 `description`, and what the parser returned. --conflicts only shows products where the two
-sources give different ages.
+sources give different ages (the airport-set situation).
 """
 
 from __future__ import annotations

@@ -1,0 +1,59 @@
+# TREC Product Search (open-domain Amazon products, no structured metadata fields).
+
+dataset:
+  kind: trec_product
+  corpus: data/raw/trec/corpus.jsonl
+  queries: 
+    - data/raw/trec/2024-test-queries.tsv
+    - data/raw/trec/2023-test-queries.tsv
+    - data/raw/trec/2025-search-queries.csv
+        
+  qrels:
+    - data/raw/trec/2024-qrels.txt
+    - data/raw/trec/2023-product-qrels.txt
+    - data/raw/trec/2025-search-qrels.txt
+                 
+  processed: data/processed/trec_products.jsonl
+  eval_set: data/processed/trec_eval.json           # chosen queries + their judgments
+
+subset:                      # the corpus has millions of products; keep judged ones + a random sample
+  max_queries: null
+  min_relevant: 1
+  rel_threshold: 1           # grade >= this counts as relevant (TREC grades: -1 unjudgeable, 0 no, 1 partly, 2 good, 3 perfect)
+  n_distractors: 20000       # random unjudged products added to the judged ones
+  seed: 13
+
+representation:
+  dense: title_description   # no reviews in this corpus
+  bm25: title_description
+  rerank: title_description
+  max_chars: 2000
+
+encoders:
+  dense: nomic-ai/nomic-embed-text-v1
+  cross_encoder: cross-encoder/msmarco-MiniLM-L12-en-de-v1
+  embedding_cache: .cache/trec_dense.npz
+  score_cache: .cache/ce_trec.sqlite
+
+
+retrieval:
+  rerank_depth: 100
+  rrf_k: 60
+  tags:                      # generated-tag methods: qam_tags (mode below), qam_tags_hard, qam_tags_soft
+    top_frac: 0.3
+    weight: 0.5              # soft filter: z-scored tag similarity x this is added to the z-scored cross-encoder score
+    kinds: null              # which tags a tag filter uses: null = all, a list of roles, or 'attributes'
+                             # (brand, color, material, size, audience, price, feature); change it, add
+                             # --out-suffix _attrs to script 04/05 and compare
+
+eval:
+  mode: qrels                # human judgments from script 01; no LLM judge
+  methods: [keyword, semantic, rerank, hybrid, qam, keyword_soft, semantic_soft, rerank_soft, hybrid_soft, qam_soft, keyword_soft_expand, semantic_soft_expand, rerank_soft_expand, hybrid_soft_expand, qam_soft_expand]
+  ks: [5, 10, 20]
+  rel_threshold: 1
+  out_dir: results/trec_product
+
+search:                      # queries used by scripts/02_search.py when no -q is given
+  example_queries:
+    - "waterproof phone case"
+    - "stainless steel hose clamp"

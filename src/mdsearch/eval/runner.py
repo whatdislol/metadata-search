@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from ..pipeline import SearchPipeline, SearchResult
+from ..runlog import describe_methods
 from .judge import Judgment, RelevanceJudge
 from .metrics import average_precision_at_k, bootstrap_ci, precision_at_k
 from .querygen import GeneratedQuery
@@ -84,6 +85,7 @@ def evaluate(
             "n_queries": len(queries),
             "n_judged_pairs": len(pair_list),
             "n_judge_unusable": sum(j.soft_ok is None and j.hard_ok for j in judgments),
+            "filtering": describe_methods(methods),
             **(meta or {}),
         },
         "summary": summary,
@@ -114,9 +116,10 @@ def _stat(values: Sequence[float]) -> dict[str, float]:
 
 def format_table(report: dict[str, Any], metric_keys: Sequence[str]) -> str:
     names = list(report["summary"])
-    header = f"{'method':10s}" + "".join(f"{m:>16s}" for m in metric_keys)
+    w = max([10] + [len(n) + 1 for n in names])
+    header = f"{'method':{w}s}" + "".join(f"{m:>16s}" for m in metric_keys)
     rows = [header]
     for n in names:
         cells = "".join(f"{report['summary'][n][m]['mean'] * 100:15.2f}%" for m in metric_keys)
-        rows.append(f"{n:10s}{cells}")
+        rows.append(f"{n:{w}s}{cells}")
     return "\n".join(rows)

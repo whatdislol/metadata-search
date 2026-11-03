@@ -1,7 +1,8 @@
-"""One configurable search pipeline: [parse] -> [filter] -> first stage -> [rerank].
+"""One configurable search pipeline: [parse] -> [hard filter] -> first stage -> [rerank] -> [soft filter].
 
-All five methods compared in the QAM replication (keyword, semantic, rerank, hybrid, qam)
-are instances of this class with different parts plugged in.
+The five methods of the QAM replication (keyword, semantic, rerank, hybrid, qam) and their LLM
+preprocessing variants (tag filters, query expansion) are instances of this class with different
+parts plugged in.
 """
 
 from __future__ import annotations
@@ -14,7 +15,9 @@ import numpy as np
 from .catalog import Catalog
 from .data.schema import Product
 from .filtering.metadata_filter import FilterReport, MetadataFilter
+from .filtering.tag_matcher import TagMatcher
 from .query.parser import QueryParser
+from .query.tag_parser import TagParser
 from .query.schema import ParsedQuery
 from .rank.cross_encoder import Scorer
 
@@ -23,6 +26,12 @@ class FirstStage(Protocol):
     ids: list[str]
 
     def scores(self, query: str, mask: np.ndarray | None = None) -> np.ndarray: ...
+
+
+def _z(x: np.ndarray) -> np.ndarray:
+    """Zero mean, unit variance (all zeros if the values are constant)."""
+    sd = x.std()
+    return (x - x.mean()) / sd if sd > 1e-12 else np.zeros_like(x, dtype=float)
 
 
 @dataclass
@@ -38,6 +47,8 @@ class SearchResult:
     parsed: ParsedQuery | None = None
     filter_report: FilterReport | None = None
     n_candidates: int = 0  # products left after filtering (== catalog size if no filter)
+    # which catalog products survived the filters (not saved to JSON); used to measure how many relevant ones a filter removed
+    mask: np.ndarray | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict:
         return {
@@ -54,8 +65,9 @@ class SearchPipeline:
     name: str
     catalog: Catalog
     first_stage: FirstStage
-    parser: QueryParser | None = None
+    parser: QueryParser | TagParser | None = None
     metadata_filter: MetadataFilter | None = None
+    tag_matcher: TagMatcher | None = None  # matches LLM-generated free-form tags by text
     reranker: Scorer | None = None
     rerank_depth: int = 100
     rerank_text: Callable[[Product], str] = field(default=lambda p: f"{p.title}. {p.description}")
@@ -80,26 +92,45 @@ class SearchPipeline:
         report: FilterReport | None = None
         semantic_q = query
         if parsed is not None:
-            if parsed.semantic_text.strip():
+            if self.metadata_filter is not None and parsed.semantic_text.strip():
+                # the paper's fixed-field QAM searches the query with the filter terms removed
                 semantic_q = parsed.semantic_text
             if self.metadata_filter is not None:
                 mask, report = self.metadata_filter.apply(parsed.filters)
 
-        scores = np.where(mask, self.first_stage.scores(semantic_q, mask), -np.inf)
-        depth = self.rerank_depth if self.reranker is not None else k
+        boost: np.ndarray | None = None
+        if self.tag_matcher is not None and parsed is not None and parsed.tags:
+            match = self.tag_matcher.apply(parsed.tags, mask)
+            mask, boost = match.mask, match.boost
+            steps = (report.steps if report else []) + match.steps
+            report = FilterReport(total=n, remaining=int(mask.sum()), steps=steps)
+
+        if parsed is not None and parsed.expansion:
+            semantic_q = f"{semantic_q}. {parsed.expansion}"  # query expansion; reranker still sees `query`
+        soft = boost is not None and self.tag_matcher.mode == "soft"
+        raw = self.first_stage.scores(semantic_q, mask)
+        scores = np.where(mask, raw, -np.inf)
+        # a soft filter reorders a candidate list, so without a second stage it still needs one longer than k
+        depth = self.rerank_depth if self.reranker is not None or soft else k
         order = np.argsort(-scores, kind="stable")[: max(depth, k)]
         order = order[np.isfinite(scores[order])]
 
         if self.reranker is not None and len(order):
             docs = [self.rerank_text(self.catalog.products[i]) for i in order]
             # the cross-encoder sees the FULL original query, as in the paper
-            ce = np.asarray(self.reranker.score(query, docs), dtype=float)
-            resort = np.argsort(-ce, kind="stable")
-            order, final = order[resort], ce[resort]
+            ranking = np.asarray(self.reranker.score(query, docs), dtype=float)
         else:
-            final = scores[order]
+            ranking = scores[order]  # the first stage decides the order
+        if soft and len(order):
+            # soft tag filter: blend the tag similarity into the score that decides the order
+            ranking = _z(ranking) + self.tag_matcher.weight * _z(boost[order])
+        if self.reranker is not None or soft:
+            resort = np.argsort(-ranking, kind="stable")
+            order, final = order[resort], ranking[resort]
+        else:
+            final = ranking
 
         hits = [
             Hit(self.catalog.ids[i], float(s)) for i, s in zip(order[:k], final[:k])
         ]
-        return SearchResult(query, hits, parsed, report, int(mask.sum()))
+        return SearchResult(query, hits, parsed, report, int(mask.sum()), mask)

@@ -11,3 +11,10 @@ from __future__ import annotations
 
 def load_esci(*args, **kwargs):
     raise NotImplementedError("Step 5")
+
+
+def prepare(cfg, *, limit=None, source=None):
+    """Hook used by scripts/01_prepare.py. To implement it, read the raw ESCI files, build
+    `queries` and `qrels` dicts and a record iterator, then call data.evalset.build_qrels_dataset
+    (see data/trec_product.py for a complete example) and save the products and the EvalSet."""
+    raise NotImplementedError("ESCI loader not written yet; see data/trec_product.py for the pattern")
