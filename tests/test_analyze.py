@@ -1,16 +1,8 @@
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
+from mdsearch.eval import analysis as analyze_script
 from mdsearch.eval.querygen import GeneratedQuery
 from mdsearch.query.schema import Filters
-
-_spec = importlib.util.spec_from_file_location(
-    "analyze_script", Path(__file__).resolve().parents[1] / "scripts" / "07_analyze.py"
-)
-analyze_script = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(analyze_script)
 
 
 def test_filter_diff():

@@ -71,6 +71,7 @@ class SearchPipeline:
     reranker: Scorer | None = None
     rerank_depth: int = 100
     rerank_text: Callable[[Product], str] = field(default=lambda p: f"{p.title}. {p.description}")
+    product_metadata: bool = False  # the product texts searched carry LLM-written metadata tags (_meta methods)
 
     def search(self, query: str, k: int = 10, parsed: ParsedQuery | None = None) -> SearchResult:
         if parsed is None and self.parser is not None:

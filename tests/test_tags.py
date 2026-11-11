@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from conftest import FakeEncoder, FakeLLM, FakeScorer
 from mdsearch.filtering.tag_matcher import TagMatcher
-from mdsearch.methods import ALL_METHODS, build_methods, parse_method, uses_llm
+from mdsearch.methods import ALL_METHODS, MetaReps, build_methods, method_catalog, parse_method, uses_llm
 from mdsearch.pipeline import SearchPipeline
 from mdsearch.query.schema import ParsedQuery, Tag
 from mdsearch.query.tag_parser import TagParser
@@ -252,11 +252,15 @@ COMMON = lambda llm: dict(
 def test_method_names_are_a_base_method_plus_optional_preprocessing():
     from mdsearch.methods import parse_method as p
 
-    assert p("rerank") == ("rerank", None, False) and p("keyword_expand") == ("keyword", None, True)
-    assert p("rerank_hard") == ("rerank", "filter", False)
-    assert p("hybrid_soft_expand") == ("hybrid", "soft", True)
-    assert p("qam_soft") == ("qam", "soft", False) and p("qam_soft_expand") == ("qam", "soft", True) and p("semantic_hard_expand") == ("semantic", "filter", True)
-    for bad in ("qam_expand_expand", "rerank_medium", "rerank_expand_hard", "qam_tags_hard", "hard", "rerank_hard_hard", "qam_hard", "qam_hard_expand"):
+    assert p("rerank") == ("rerank", None, False, False) and p("keyword_expand") == ("keyword", None, True, False)
+    assert p("rerank_hard") == ("rerank", "filter", False, False)
+    assert p("hybrid_soft_expand") == ("hybrid", "soft", True, False)
+    assert p("qam_soft") == ("qam", "soft", False, False) and p("qam_soft_expand") == ("qam", "soft", True, False)
+    assert p("semantic_hard_expand") == ("semantic", "filter", True, False)
+    assert p("semantic_meta") == ("semantic", None, False, True)
+    assert p("hybrid_meta_soft_expand") == ("hybrid", "soft", True, True) and p("rerank_meta_hard").meta
+    for bad in ("qam_expand_expand", "rerank_medium", "rerank_expand_hard", "qam_tags_hard", "hard", "rerank_hard_hard",
+                "qam_hard", "qam_hard_expand", "qam_meta", "qam_meta_soft", "rerank_hard_meta", "rerank_expand_meta"):
         assert p(bad) is None
 
 
@@ -272,12 +276,13 @@ def test_every_base_method_can_take_every_preprocessing_step(catalog):
         "semantic_text": "toy", "filters": {"brand": "LEGO"}, "expansion": "building bricks",
         "tags": [{"text": "LEGO", "kind": "brand"}],
     }))
-    names = tuple(f"{b}{f}{e}" for b in ("keyword", "semantic", "rerank", "hybrid", "qam")
-                  for f in ("", "_hard", "_soft") for e in ("", "_expand") if not (b == "qam" and f == "_hard"))
-    got = build_methods(catalog, only=names, **COMMON(llm))
-    assert list(got) == list(names)  # in the order asked for
+    names = tuple(method_catalog())
+    meta = MetaReps(TitleDescription(), TitleDescription(), TitleDescription())  # real tags come from the tag file
+    got = build_methods(catalog, only=names, meta=meta, **COMMON(llm))
+    assert list(got) == list(names) and len(names) == 52  # in the order asked for
     for n, pipe in got.items():
-        base, mode, expand = parse_method(n)
+        base, mode, expand, with_meta = parse_method(n)
+        assert pipe.product_metadata == with_meta
         assert (pipe.tag_matcher.mode if pipe.tag_matcher else None) == mode
         assert (pipe.metadata_filter is not None) == (base == "qam")
         assert (pipe.reranker is not None) == (base in ("rerank", "qam"))
@@ -417,7 +422,8 @@ def test_method_catalog_lists_every_valid_name_and_describes_it():
     from mdsearch.methods import BASE_METHODS, describe_method, method_catalog
 
     names = method_catalog()
-    assert len(names) == len(set(names)) == 28 and "qam_hard" not in names and "qam_soft_expand" in names
+    assert len(names) == len(set(names)) == 52 and "qam_hard" not in names and "qam_soft_expand" in names
+    assert "qam_meta" not in names and "hybrid_meta_soft_expand" in names
     assert [n for n in names if "_" not in n] == list(BASE_METHODS)
     for n in names:
         d = describe_method(n)
