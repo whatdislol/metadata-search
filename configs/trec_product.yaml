@@ -30,7 +30,7 @@ representation:
   max_chars: 2000
   metadata:
     category_levels: 3
-    fields: ["Brand", "Manufacturer", "Color", "Material", "Item model number", "Size", "Style", "Item Dimensions LxWxH", "Number of Items", "Unit Count", "Special Feature", "Included Components", "Shape", "Part Number", "Country of Origin", "Age Range (Description)", "Number of Pieces", "Item Form", "Language", "Manufacturer Part Number", "Theme"]
+    fields: ["Brand", "Manufacturer", "Color", "Material", "Item model number", "Size", "Style", "Item Dimensions LxWxH", "Number of Items", "Unit Count", "Special Feature", "Included Components", "Shape", "Part Number", "Country of Origin", "Age Range (Description)", "Number of Pieces", "Item Form", "Language", "Manufacturer Part Number"]
     max_value_chars: 80
     position: before
 
