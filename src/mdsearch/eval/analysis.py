@@ -247,7 +247,8 @@ def explain_parse_errors(per_query: list[dict], queries: list, ref: str, show: i
     return "\n".join([head] + lines[:show])
 
 
-def analyze_qrels(per_query: list[dict], k: int = 10, ref: str | None = None, metric: str = "nDCG") -> str:
+def analyze_qrels(per_query: list[dict], k: int = 10, ref: str | None = None, metric: str = "nDCG",
+                  k_p: int | None = None, k_r: int | None = None) -> str:
     """Per-method summary for qrels evaluations, plus a paired bootstrap against `ref`.
 
     `pool` is how many products were left after filtering (the whole pool for unfiltered methods), so
@@ -261,14 +262,14 @@ def analyze_qrels(per_query: list[dict], k: int = 10, ref: str | None = None, me
     if not methods:
         return "no results"
     ref = ref if ref in by_method else methods[0]
-    pk, mk, rk = f"P@{k}", f"{metric}@{k}", f"R@{k}"
+    pk, mk, rk = f"P@{k_p or k}", f"{metric}@{k}", f"R@{k_r or k}"
     sample = next(iter(by_method[ref].values()))
     for key in (pk, mk, rk):
         if key not in sample:
             avail = sorted(x for x in sample if "@" in x)
             raise SystemExit(f"{key} not in the results; available: {avail}")
     qids = sorted(set.intersection(*(set(by_method[m]) for m in methods)))
-    out = [f"== {len(qids)} queries, k={k}, reference = {ref}",
+    out = [f"== {len(qids)} queries, {metric} k={k}, reference = {ref}",
            f"{'method':16s}{pk:>9s}{mk:>11s}{rk:>9s}{'no relevant':>13s}{'pool mean':>11s}{'pool median':>13s}{'rel kept':>10s}"
            f"   {metric}({ref}) - {metric}(method)  [95% CI]   wins/losses"]
     for m in methods:
@@ -392,7 +393,11 @@ def run_analysis(
     meta = json.loads((d / "summary.json").read_text(encoding="utf-8")).get("meta", {})
     per_query = read_jsonl(d / "per_query.jsonl")
     if eval_mode(cfg) == "qrels":
-        text = analyze_qrels(per_query, k, ref) + "\n\n" + tag_report(per_query, k, ref)
+        ks = cfg["eval"]["ks"]
+        pick = lambda m: (lambda v: k if k in v else v[0])(tuple(ks[m]) if isinstance(ks, dict) and m in ks else ())
+        k_p = pick("P") if isinstance(ks, dict) and "P" in ks else None
+        k_r = pick("R") if isinstance(ks, dict) and "R" in ks else None
+        text = analyze_qrels(per_query, k, ref, k_p=k_p, k_r=k_r) + "\n\n" + tag_report(per_query, k, ref)
         eval_set = resolve_path(cfg["dataset"]["eval_set"])
         if eval_set.exists():
             by_group = group_report(per_query, EvalSet.load(eval_set).groups, k, ref)

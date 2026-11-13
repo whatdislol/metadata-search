@@ -22,7 +22,7 @@ from ..experiment import style_paths
 from ..llm import LLM
 from ..pipeline import SearchPipeline
 from .judge import RelevanceJudge
-from .qrels_eval import evaluate_qrels
+from .qrels_eval import METRICS, evaluate_qrels, metric_ks
 from .querygen import load_queries
 from .runner import evaluate, format_table
 
@@ -67,7 +67,7 @@ def run_evaluation(
 ) -> Outcome:
     ecfg = cfg["eval"]
     mode = eval_mode(cfg)
-    ks = tuple(ecfg["ks"])
+    ks = ecfg["ks"] if isinstance(ecfg["ks"], dict) else tuple(ecfg["ks"])  # list = all metrics, mapping = per metric
     out_dir = results_dir(cfg, style, out_suffix)
     meta = {"config": config_name, "eval_mode": mode, "encoders": cfg.get("encoders"),
             "representation": cfg.get("representation"), "n_products": len(catalog)}
@@ -84,24 +84,26 @@ def run_evaluation(
         judge = RelevanceJudge(
             llm, catalog, price_tol=ecfg.get("price_tol", 0.2), rating_tol=ecfg.get("rating_tol", 0.2)
         )
+        kl = tuple(ks if not isinstance(ks, dict) else ks.get("P", ()))
         report = evaluate(
-            methods, queries, judge, ks=ks, out_dir=out_dir, verbose=verbose,
+            methods, queries, judge, ks=kl, out_dir=out_dir, verbose=verbose,
             meta={**meta, "llm_provider": llm.provider, "llm_model": llm.model, "query_style": style},
         )
-        return Outcome(report, out_dir, [[f"P@{k}" for k in ks] + [f"mAP@{k}" for k in ks]])
+        return Outcome(report, out_dir, [[f"P@{k}" for k in kl] + [f"mAP@{k}" for k in kl]])
 
     path = resolve_path(cfg["dataset"]["eval_set"])
     if not path.exists():
         raise SystemExit(f"{path} not found. Run scripts/01_prepare.py --config {config_name or '<config>'}")
     ev = EvalSet.load(path)
     queries_d = dict(list(ev.queries.items())[:limit]) if limit else ev.queries
+    mks = metric_ks(ks)
     report = evaluate_qrels(
         methods, queries_d, ev.qrels, ks=ks, rel_threshold=ecfg.get("rel_threshold", ev.rel_threshold),
         out_dir=out_dir, verbose=verbose,
         meta={**meta, "llm_model": llm.model if llm else None,
               "tags": cfg.get("retrieval", {}).get("tags")},
     )
-    return Outcome(report, out_dir, [[f"{m}@{k}" for k in ks] for m in ("P", "AP", "nDCG", "R")])
+    return Outcome(report, out_dir, [[f"{m}@{k}" for k in mks[m]] for m in METRICS])
 
 
 def format_outcome(outcome: Outcome) -> str:

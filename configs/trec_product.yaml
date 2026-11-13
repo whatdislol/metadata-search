@@ -30,7 +30,7 @@ representation:
   max_chars: 2000
   metadata:
     category_levels: 3
-    fields: ["Brand", "Manufacturer", "Color", "Material", "Item model number", "Size", "Style", "Item Dimensions LxWxH", "Number of Items", "Unit Count", "Special Feature", "Included Components", "Shape", "Part Number", "Country of Origin", "Age Range (Description)"]
+    fields: ["Brand", "Manufacturer", "Color", "Material", "Item model number", "Size", "Style", "Item Dimensions LxWxH", "Number of Items", "Unit Count", "Special Feature", "Included Components", "Shape", "Part Number", "Country of Origin", "Age Range (Description)", "Number of Pieces", "Item Form", "Language", "Manufacturer Part Number", "Theme"]
     max_value_chars: 80
     position: before
 
@@ -54,7 +54,10 @@ retrieval:
 eval:
   mode: qrels                # human judgments from script 01; no LLM judge
   methods: [keyword, keyword_meta, semantic, semantic_meta, rerank, rerank_meta, hybrid, hybrid_meta]
-  ks: [5, 10, 20]
+  ks: 
+    P: [100]
+    nDCG: [100]
+    R: [100]
   rel_threshold: 1
   out_dir: results/trec_product
 

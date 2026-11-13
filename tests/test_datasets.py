@@ -382,3 +382,21 @@ def test_group_report_splits_results_by_group_and_stays_quiet_for_one_group():
     assert "soft" in text and "+10.00" in text.split("-- b")[0]  # reference minus method = +10 points in group a
     assert group_report(rows, {q: "a" for q in "1234"}, k=10, ref="rerank") == ""
     assert group_report(rows, {}, k=10, ref="rerank") == ""
+
+
+def test_ks_can_be_set_per_metric(tmp_path):
+    from mdsearch.eval.qrels_eval import metric_ks
+
+    assert metric_ks([1, 3]) == {m: (1, 3) for m in ("P", "AP", "nDCG", "R")}
+    assert metric_ks({"P": [5], "nDCG": [10, 20], "R": [100]}) == {"P": (5,), "AP": (5,), "nDCG": (10, 20), "R": (100,)}
+    with pytest.raises(ValueError):
+        metric_ks({"P": [5], "nDCG": [10]})
+    with pytest.raises(ValueError):
+        metric_ks({"X": [1]})
+
+
+def test_evaluate_qrels_with_independent_cutoffs(catalog, tmp_path):
+    qrels = {"q1": {"a": 2, "b": 1, "c": 0}}
+    rep = evaluate_qrels({"kw": kw_pipeline(catalog)}, {"q1": "LEGO creative bricks"}, qrels,
+                         ks={"P": [1], "nDCG": [2, 3], "R": [3]}, out_dir=tmp_path, verbose=False)
+    assert set(rep["summary"]["kw"]) == {"P@1", "AP@1", "nDCG@2", "nDCG@3", "R@3"}
