@@ -13,7 +13,7 @@ from .query.schema import ATTRIBUTE_KINDS
 from .pipeline import SearchPipeline
 from .rank.cross_encoder import CachedScorer, CrossEncoderScorer
 from .rank.dense import SentenceTransformerEncoder
-from .representation import NativeMetadata, get_representation
+from .representation import NativeMetadata, get_representation, metadata_keys
 
 
 def _tag_kinds(value) -> tuple[str, ...] | None:
@@ -114,4 +114,6 @@ def make_methods(
         tag_weight=tags.get("weight", 0.5),
         tag_kinds=_tag_kinds(tags.get("kinds")),
         meta=_meta_reps(rep, plain, catalog, wanted_meta),
+        fill_keys=metadata_keys((rep.get("metadata") or {}).get("fields") or [],
+                                int((rep.get("metadata") or {}).get("category_levels") or 0)),
     )

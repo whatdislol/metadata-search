@@ -14,6 +14,12 @@ def field_key(spec: str) -> str:
     return spec.split("|")[0].strip().lower().replace(" ", "_")
 
 
+def metadata_keys(fields: Sequence[str] = (), category_levels: int = 0) -> list[str]:
+    """The keys NativeMetadata writes, in its order: "category" first, then one key per field spec."""
+    keys = (["category"] if category_levels > 0 else []) + [field_key(f) for f in fields if f.strip()]
+    return list(dict.fromkeys(keys))
+
+
 class NativeMetadata:
     """Adds `Metadata: key=value; ...` built from the product's own category path and attribute tables.
 

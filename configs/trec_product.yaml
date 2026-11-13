@@ -53,7 +53,7 @@ retrieval:
 
 eval:
   mode: qrels                # human judgments from script 01; no LLM judge
-  methods: [keyword, keyword_meta, semantic, semantic_meta, rerank, rerank_meta, hybrid, hybrid_meta]
+  methods: [keyword, keyword_meta, keyword_meta_fill, semantic, semantic_meta, semantic_meta_fill, rerank, rerank_meta, rerank_meta_fill, hybrid, hybrid_meta, hybrid_meta_fill]
   ks: 
     P: [10]
     nDCG: [100]

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from typing import Sequence
 
 from pydantic import BaseModel, Field
 
@@ -49,6 +51,25 @@ Now the real query.
 
 Query: {query}"""
 
+FILL_SYSTEM = """
+
+Also return "metadata": an object that fills in the metadata a matching product's listing would carry, \
+using ONLY these keys: {keys}. Values are short (1-4 words) and written the way a listing writes them \
+(for "category", the name of the product category, e.g. "Hiking Backpacks"). Fill a key when the query \
+states the value or makes it very likely (category, material or type); leave a key out when it is unknown. \
+Never invent a brand, colour, size, number or price the shopper did not mention."""
+
+# (query, semantic_text, tags, metadata); examples are filtered to the keys that exist in the product text
+_FILL_EXAMPLES = (
+    ("waterproof backpack under 40 pounds for hiking", "hiking backpack",
+     [{"text": "waterproof", "kind": "feature"}, {"text": "under 40 pounds", "kind": "price"}],
+     {"category": "Hiking Backpacks", "material": "waterproof nylon"}),
+    ("peplum top", "peplum top", [], {"category": "Women's Blouses", "style": "peplum"}),
+    ("blue Nike running shoes", "running shoes",
+     [{"text": "blue", "kind": "color"}, {"text": "Nike", "kind": "brand"}],
+     {"category": "Running Shoes", "brand": "Nike", "color": "blue"}),
+)
+
 TAG_USER = """Examples:
 
 Query: Looking for educational toys specifically from LEGO, designed to promote creativity, suitable for children aged 5-8
@@ -68,17 +89,39 @@ Now the real query.
 Query: {query}"""
 
 
-def build_tag_prompt(query: str, expand: bool = False) -> str:
+def _fill_examples(keys: Sequence[str]) -> str:
+    allowed = set(keys)
+    out = ["Examples:\n"]
+    for q, sem, tags, meta in _FILL_EXAMPLES:
+        meta = {k: v for k, v in meta.items() if k in allowed}
+        reply = json.dumps({"semantic_text": sem, "tags": tags, "metadata": meta}, ensure_ascii=False)
+        out.append(f"Query: {q}\n{reply}\n")
+    return "\n".join(out).replace("{", "{{").replace("}", "}}") + "\nNow the real query.\n\nQuery: {query}"
+
+
+def build_tag_prompt(query: str, expand: bool = False, fill_keys: Sequence[str] | None = None) -> str:
+    if fill_keys:
+        return _fill_examples(fill_keys).format(query=query)
     return (EXPAND_EXAMPLES if expand else TAG_USER).format(query=query)
+
+
+def metadata_text(values: dict[str, str], keys: Sequence[str], max_chars: int = 80) -> str:
+    """`Metadata: key=value; ...` in the order of `keys`, in the format the product text uses. Keys outside
+    `keys` and empty values are dropped, so the LLM cannot add fields the products do not have."""
+    have = {str(k).strip().lower().replace(" ", "_"): " ".join(str(v).split())[:max_chars] for k, v in values.items()}
+    items = [f"{k}={have[k]}" for k in keys if have.get(k)]
+    return "Metadata: " + "; ".join(items) if items else ""
 
 
 class _TagReply(BaseModel):
     semantic_text: str
     tags: list[Tag] = Field(default_factory=list)
     expansion: str = ""
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
-def _to_parsed(reply: _TagReply, query: str, max_tags: int, expand: bool = False) -> ParsedQuery:
+def _to_parsed(reply: _TagReply, query: str, max_tags: int, expand: bool = False,
+               fill_keys: Sequence[str] | None = None) -> ParsedQuery:
     seen: set[str] = set()
     tags: list[Tag] = []
     for t in reply.tags:
@@ -88,17 +131,23 @@ def _to_parsed(reply: _TagReply, query: str, max_tags: int, expand: bool = False
             tags.append(t)
     return ParsedQuery(
         semantic_text=reply.semantic_text.strip() or query, tags=tags[:max_tags],
-        expansion=" ".join(reply.expansion.split()) if expand else "",
+        expansion=metadata_text(reply.metadata, fill_keys) if fill_keys
+        else " ".join(reply.expansion.split()) if expand else "",
     )
 
 
 class TagParser:
     """Drop-in replacement for QueryParser that returns generated tags instead of fixed filters."""
 
-    def __init__(self, llm: LLM, retries: int = 2, max_tags: int = 6, expand: bool = False) -> None:
+    def __init__(self, llm: LLM, retries: int = 2, max_tags: int = 6, expand: bool = False,
+                 fill_keys: Sequence[str] | None = None) -> None:
         self.llm = llm
-        self.expand = expand  # also ask for a query expansion (query rewriting)
-        self.system = TAG_SYSTEM + (EXPAND_SYSTEM if expand else "")
+        self.fill_keys = list(fill_keys) if fill_keys else None  # fill in these metadata keys (the `_fill` methods)
+        self.expand = expand and not self.fill_keys  # also ask for a query expansion (query rewriting)
+        self.system = TAG_SYSTEM + (
+            FILL_SYSTEM.replace("{keys}", ", ".join(self.fill_keys)) if self.fill_keys
+            else EXPAND_SYSTEM if self.expand else ""
+        )
         self.retries = retries
         self.max_tags = max_tags
         self.n_failures = 0  # queries that fell back to "no tags"
@@ -106,10 +155,10 @@ class TagParser:
     def parse(self, query: str) -> ParsedQuery:
         try:
             reply = complete_json(
-                self.llm, build_tag_prompt(query, self.expand), _TagReply, system=self.system,
+                self.llm, build_tag_prompt(query, self.expand, self.fill_keys), _TagReply, system=self.system,
                 retries=self.retries,
             )
-            return _to_parsed(reply, query, self.max_tags, self.expand)
+            return _to_parsed(reply, query, self.max_tags, self.expand, self.fill_keys)
         except LLMError as e:
             log.warning("Tag generation failed for %r (%s); using no tags", query, e)
             self.n_failures += 1
@@ -118,12 +167,12 @@ class TagParser:
     def parse_many(self, queries: list[str]) -> list[ParsedQuery]:
         schema = _TagReply.model_json_schema()
         replies = self.llm.complete_many(
-            [build_tag_prompt(q, self.expand) for q in queries], system=self.system, schema=schema
+            [build_tag_prompt(q, self.expand, self.fill_keys) for q in queries], system=self.system, schema=schema
         )
         out: list[ParsedQuery] = []
         for q, raw in zip(queries, replies):
             try:
-                out.append(_to_parsed(parse_reply(raw, _TagReply), q, self.max_tags, self.expand))
+                out.append(_to_parsed(parse_reply(raw, _TagReply), q, self.max_tags, self.expand, self.fill_keys))
             except ValueError:
                 out.append(self.parse(q))
         return out

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Sequence
 
 from .catalog import Catalog
 from .filtering.metadata_filter import MetadataFilter
@@ -26,7 +26,7 @@ BASE_METHODS = ALL_METHODS
 META_BASES = ("keyword", "semantic", "rerank", "hybrid")  # bases that can search product text with metadata
 # A method name is a base method plus optional suffixes, always in this order:
 #
-#     <base>[_meta][_hard|_soft][_expand]          base: keyword, semantic, rerank, hybrid, qam
+#     <base>[_meta][_hard|_soft][_expand|_fill]    base: keyword, semantic, rerank, hybrid, qam
 #
 #   _meta    DOCUMENT side: the products' own text carries LLM-written metadata tags ("Metadata: brand=X;
 #            color=Y", see product_tags.py and representation/tagged.py). The same models (BM25, nomic
@@ -39,6 +39,10 @@ META_BASES = ("keyword", "semantic", "rerank", "hybrid")  # bases that can searc
 #            ranking score (the cross-encoder score where there is one, else the first-stage score)
 #   _expand  the LLM also writes an expansion of the query and the first stage searches with it; the
 #            cross-encoder always sees the user's original query
+#   _fill    the LLM instead fills in metadata values for the query using the SAME keys as the product
+#            metadata (category, brand, color, ...), written as "Metadata: category=...; material=..." and
+#            appended to the first-stage query, so query and products share one format. Not offered for qam.
+#            Needs representation.metadata (fields / category_levels); works with or without `_meta`.
 #
 #   Examples: rerank_meta, hybrid_meta_soft_expand, keyword_expand, qam_soft.
 #   `qam` is the paper's method: a HARD filter on fixed fields the LLM fills (brand, price, rating, age).
@@ -51,7 +55,7 @@ META_BASES = ("keyword", "semantic", "rerank", "hybrid")  # bases that can searc
 # setting, not a method: retrieval.tags.kinds (null = all, a list of roles such as [brand, color], or
 # "attributes").
 # Only the five base methods are built by default; every variant is built only when named in `only`.
-_METHOD_NAME = re.compile(r"^(keyword|semantic|rerank|hybrid|qam)(_meta)?(_hard|_soft)?(_expand)?$")
+_METHOD_NAME = re.compile(r"^(keyword|semantic|rerank|hybrid|qam)(_meta)?(_hard|_soft)?(_expand|_fill)?$")
 _RENAMED = re.compile(r"^qam_tags(?:_(hard|soft))?(_expand)?$")
 
 
@@ -60,6 +64,7 @@ class Method(NamedTuple):
     mode: str | None  # query-side tag filter: "filter" (hard), "soft" or None
     expand: bool  # query expansion
     meta: bool  # document-side metadata tags in the product text
+    fill: bool = False  # query-side metadata fill-in (same keys as the product metadata)
 
 
 def parse_method(name: str) -> Method | None:
@@ -67,24 +72,24 @@ def parse_method(name: str) -> Method | None:
     m = _METHOD_NAME.match(name)
     if not m:
         return None
-    base, meta, filt, expand = m.group(1), bool(m.group(2)), m.group(3), bool(m.group(4))
-    if base == "qam" and (meta or filt == "_hard"):
+    base, meta, filt, ex = m.group(1), bool(m.group(2)), m.group(3), m.group(4)
+    if base == "qam" and (meta or filt == "_hard" or ex == "_fill"):
         return None
-    return Method(base, {"_hard": "filter", "_soft": "soft"}.get(filt), expand, meta)
+    return Method(base, {"_hard": "filter", "_soft": "soft"}.get(filt), ex == "_expand", meta, ex == "_fill")
 
 
 def uses_llm(name: str) -> bool:
     """True for every method that asks an LLM to parse the query (qam, and any _hard/_soft/_expand variant).
     `_meta` alone does not: the product metadata is the corpus's own (category, attributes)."""
     p = parse_method(name)
-    return p is not None and (p.base == "qam" or p.mode is not None or p.expand)
+    return p is not None and (p.base == "qam" or p.mode is not None or p.expand or p.fill)
 
 
 def method_catalog() -> list[str]:
     """Every valid method name, grouped by base method (the order of BASE_METHODS)."""
     names = (
         f"{b}{m}{f}{e}"
-        for b in BASE_METHODS for m in ("", "_meta") for f in ("", "_hard", "_soft") for e in ("", "_expand")
+        for b in BASE_METHODS for m in ("", "_meta") for f in ("", "_hard", "_soft") for e in ("", "_expand", "_fill")
     )
     return [n for n in names if parse_method(n) is not None]
 
@@ -98,9 +103,9 @@ def describe_method(name: str) -> dict[str, str]:
     parsed = parse_method(name)
     if parsed is None:
         raise _unknown([name])
-    base, mode, expand, meta = parsed
+    base, mode, expand, meta, fill = parsed
     fixed = base == "qam"
-    steps = (["fixed fields"] if fixed else []) + (["tags"] if mode else []) + (["expansion"] if expand else [])
+    steps = (["fixed fields"] if fixed else []) + (["tags"] if mode else []) + (["expansion"] if expand else []) + (["metadata fill-in"] if fill else [])
     kinds = (["hard on fixed fields"] if fixed else []) + (
         [] if mode is None else ["hard on tags (top share per tag value)"] if mode == "filter" else ["soft on tags (score boost)"]
     )
@@ -110,9 +115,9 @@ def describe_method(name: str) -> dict[str, str]:
         "documents": "title + description + product metadata" if meta else "title + description",
         "llm": ", ".join(steps) if steps else "-",
         "filter": " + ".join(kinds) if kinds else "none",
-        "first_stage": f"{_FIRST_STAGE[base]} on {text}" + (" + expansion" if expand else ""),
+        "first_stage": f"{_FIRST_STAGE[base]} on {text}" + (" + expansion" if expand else " + filled metadata" if fill else ""),
         "second_stage": "cross-encoder on your query" if base in ("rerank", "qam") else "none",
-        "datasets": "needs structured fields (toys)" if fixed else "needs product metadata (category / attributes)" if meta else "any",
+        "datasets": "needs structured fields (toys)" if fixed else "needs product metadata (category / attributes)" if meta or fill else "any",
     }
 
 
@@ -121,13 +126,15 @@ def _unknown(names: list[str]) -> ValueError:
     for n in names:
         if n.startswith("qam_meta"):
             hints.append(f"{n!r} is not offered (qam uses structured fields, not tags in the text).")
+        if n.startswith("qam") and n.endswith("_fill"):
+            hints.append(f"{n!r} is not offered (qam fills fixed fields, not metadata keys); use rerank_fill.")
         if n.startswith("qam_hard"):
             hints.append(f"{n!r} is not offered (two hard filters in a row); use qam_soft{n[len('qam_hard'):]} or rerank_hard.")
         m = _RENAMED.match(n)
         if m:
             hints.append(f"{n!r} was renamed: use rerank_{m.group(1) or 'hard'}{m.group(2) or ''}")
     return ValueError(
-        f"Unknown method(s) {names}. {' '.join(hints)} Names are <base>[_meta][_hard|_soft][_expand] with base in "
+        f"Unknown method(s) {names}. {' '.join(hints)} Names are <base>[_meta][_hard|_soft][_expand|_fill] with base in "
         f"{', '.join(BASE_METHODS)} (see the top of methods.py)."
     )
 
@@ -166,6 +173,7 @@ def build_methods(
     tag_weight: float = 0.5,
     tag_kinds: tuple[str, ...] | None = None,
     meta: MetaReps | None = None,
+    fill_keys: Sequence[str] = (),
 ) -> dict[str, SearchPipeline]:
     """Builds the named methods in the order given (default: the five base methods).
 
@@ -184,6 +192,11 @@ def build_methods(
                 "category_levels in the config (see scripts/tools/profile_metadata.py)"
             )
 
+    if not fill_keys and any(parse_method(n).fill for n in names):  # type: ignore[union-attr]
+        raise ValueError(
+            "The _fill methods need the metadata keys of the product text: set representation.metadata.fields "
+            "and/or category_levels in the config"
+        )
     ids = catalog.ids
     bm25 = BM25Retriever(ids, catalog.texts(bm25_rep))
     dense = DenseRetriever.build(ids, catalog.texts(dense_rep), encoder, embedding_cache)
@@ -207,14 +220,14 @@ def build_methods(
 
     methods: dict[str, SearchPipeline] = {}
     for name in names:
-        base, mode, expand, with_meta = parse_method(name)  # type: ignore[misc]
+        base, mode, expand, with_meta, fill = parse_method(name)  # type: ignore[misc]
         parts: dict = {}
         if base == "qam":  # fixed metadata fields (hard); tags, if any, are applied on top
             fields = QueryParser(llm, expand=expand)  # type: ignore[arg-type]
             parts["metadata_filter"] = MetadataFilter(catalog)
             parts["parser"] = fields if mode is None else CombinedParser(fields, TagParser(llm))  # type: ignore[arg-type]
-        elif mode is not None or expand:  # tags are generated even when only the expansion is used
-            parts["parser"] = TagParser(llm, expand=expand)  # type: ignore[arg-type]
+        elif mode is not None or expand or fill:  # tags are generated even when only the expansion is used
+            parts["parser"] = TagParser(llm, expand=expand, fill_keys=fill_keys if fill else None)  # type: ignore[arg-type]
         stage = first_stage[base]
         tag_index = dense
         rerank_text = rerank_rep.render

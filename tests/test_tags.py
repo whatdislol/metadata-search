@@ -252,14 +252,15 @@ COMMON = lambda llm: dict(
 def test_method_names_are_a_base_method_plus_optional_preprocessing():
     from mdsearch.methods import parse_method as p
 
-    assert p("rerank") == ("rerank", None, False, False) and p("keyword_expand") == ("keyword", None, True, False)
-    assert p("rerank_hard") == ("rerank", "filter", False, False)
-    assert p("hybrid_soft_expand") == ("hybrid", "soft", True, False)
-    assert p("qam_soft") == ("qam", "soft", False, False) and p("qam_soft_expand") == ("qam", "soft", True, False)
-    assert p("semantic_hard_expand") == ("semantic", "filter", True, False)
-    assert p("semantic_meta") == ("semantic", None, False, True)
-    assert p("hybrid_meta_soft_expand") == ("hybrid", "soft", True, True) and p("rerank_meta_hard").meta
-    for bad in ("qam_expand_expand", "rerank_medium", "rerank_expand_hard", "qam_tags_hard", "hard", "rerank_hard_hard",
+    assert tuple(p("rerank")) == ("rerank", None, False, False, False) and tuple(p("keyword_expand")) == ("keyword", None, True, False, False)
+    assert tuple(p("rerank_hard")) == ("rerank", "filter", False, False, False)
+    assert tuple(p("hybrid_soft_expand")) == ("hybrid", "soft", True, False, False)
+    assert tuple(p("qam_soft")) == ("qam", "soft", False, False, False) and tuple(p("qam_soft_expand")) == ("qam", "soft", True, False, False)
+    assert tuple(p("semantic_hard_expand")) == ("semantic", "filter", True, False, False)
+    assert tuple(p("semantic_meta")) == ("semantic", None, False, True, False)
+    assert tuple(p("hybrid_meta_soft_expand")) == ("hybrid", "soft", True, True, False) and p("rerank_meta_hard").meta
+    assert tuple(p("rerank_meta_soft_fill")) == ("rerank", "soft", False, True, True)
+    for bad in ("qam_fill", "qam_soft_fill", "rerank_fill_expand", "rerank_expand_fill", "qam_expand_expand", "rerank_medium", "rerank_expand_hard", "qam_tags_hard", "hard", "rerank_hard_hard",
                 "qam_hard", "qam_hard_expand", "qam_meta", "qam_meta_soft", "rerank_hard_meta", "rerank_expand_meta"):
         assert p(bad) is None
 
@@ -278,10 +279,10 @@ def test_every_base_method_can_take_every_preprocessing_step(catalog):
     }))
     names = tuple(method_catalog())
     meta = MetaReps(TitleDescription(), TitleDescription(), TitleDescription())  # real tags come from the tag file
-    got = build_methods(catalog, only=names, meta=meta, **COMMON(llm))
-    assert list(got) == list(names) and len(names) == 52  # in the order asked for
+    got = build_methods(catalog, only=names, meta=meta, fill_keys=["category", "brand"], **COMMON(llm))
+    assert list(got) == list(names) and len(names) == 76  # in the order asked for
     for n, pipe in got.items():
-        base, mode, expand, with_meta = parse_method(n)
+        base, mode, expand, with_meta, fill = parse_method(n)
         assert pipe.product_metadata == with_meta
         assert (pipe.tag_matcher.mode if pipe.tag_matcher else None) == mode
         assert (pipe.metadata_filter is not None) == (base == "qam")
@@ -422,7 +423,7 @@ def test_method_catalog_lists_every_valid_name_and_describes_it():
     from mdsearch.methods import BASE_METHODS, describe_method, method_catalog
 
     names = method_catalog()
-    assert len(names) == len(set(names)) == 52 and "qam_hard" not in names and "qam_soft_expand" in names
+    assert len(names) == len(set(names)) == 76 and "qam_hard" not in names and "qam_soft_expand" in names
     assert "qam_meta" not in names and "hybrid_meta_soft_expand" in names
     assert [n for n in names if "_" not in n] == list(BASE_METHODS)
     for n in names:
@@ -434,3 +435,33 @@ def test_method_catalog_lists_every_valid_name_and_describes_it():
     assert describe_method("hybrid_soft_expand")["first_stage"] == "BM25 + dense (RRF) on your query + expansion"
     with pytest.raises(ValueError, match="Unknown method"):
         describe_method("qam_hard")
+
+
+def test_fill_expansion_uses_the_product_metadata_keys(catalog):
+    from mdsearch.query.tag_parser import TagParser, build_tag_prompt, metadata_text
+
+    keys = ["category", "brand", "material"]
+    llm = FakeLLM(reply(semantic_text="bricks", tags=[],
+                        metadata={"Category": "Building Toys", "brand": "", "Material": " ABS   plastic ", "weight": "2 kg"}))
+    parsed = TagParser(llm, fill_keys=keys).parse("lego bricks")
+    assert parsed.expansion == "Metadata: category=Building Toys; material=ABS plastic"  # keys outside the product text are dropped
+    assert metadata_text({"x": "y"}, keys) == ""
+    prompt = build_tag_prompt("q", fill_keys=["category"])
+    assert '"metadata": {"category": "Hiking Backpacks"}' in prompt and '"material"' not in prompt  # examples keep only existing keys
+    seen: list[str] = []
+    class Spy(FakeLLM):
+        def complete(self, prompt, **kw):
+            seen.append(kw.get("system", "")); return super().complete(prompt, **kw)
+    TagParser(Spy(reply(semantic_text="b")), fill_keys=keys).parse("lego")
+    assert "category, brand, material" in seen[0]
+
+
+def test_fill_method_searches_query_plus_filled_metadata(catalog):
+    got = build_methods(catalog, only=("semantic_fill",), fill_keys=["category"],
+                        **COMMON(FakeLLM(reply(semantic_text="bricks", tags=[], metadata={"category": "Building Toys"}))))
+    r = got["semantic_fill"].search("lego bricks", k=3)
+    assert r.parsed.expansion == "Metadata: category=Building Toys" and r.hits
+    with pytest.raises(ValueError, match="_fill methods need"):
+        build_methods(catalog, only=("semantic_fill",), **COMMON(FakeLLM(reply(semantic_text="b"))))
+    with pytest.raises(ValueError, match="rerank_fill"):
+        build_methods(catalog, only=("qam_fill",), **COMMON(FakeLLM(reply(semantic_text="b"))))

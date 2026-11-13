@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .base import DocRepresentation
-from .native import NativeMetadata
+from .native import NativeMetadata, metadata_keys
 from .tagged import TaggedMetadata
 from .templated import TemplatedMetadata
 from .text import TitleDescription, TitleReviews
@@ -21,6 +21,7 @@ def get_representation(name: str, max_chars: int = 2000) -> DocRepresentation:
 __all__ = [
     "DocRepresentation",
     "NativeMetadata",
+    "metadata_keys",
     "TaggedMetadata",
     "TemplatedMetadata",
     "TitleDescription",
