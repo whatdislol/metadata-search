@@ -55,7 +55,7 @@ eval:
   mode: qrels                # human judgments from script 01; no LLM judge
   methods: [keyword, keyword_meta, semantic, semantic_meta, rerank, rerank_meta, hybrid, hybrid_meta]
   ks: 
-    P: [100]
+    P: [10]
     nDCG: [100]
     R: [100]
   rel_threshold: 1
