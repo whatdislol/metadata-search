@@ -461,6 +461,8 @@ def test_fill_method_searches_query_plus_filled_metadata(catalog):
                         **COMMON(FakeLLM(reply(semantic_text="bricks", tags=[], metadata={"category": "Building Toys"}))))
     r = got["semantic_fill"].search("lego bricks", k=3)
     assert r.parsed.expansion == "Metadata: category=Building Toys" and r.hits
+    from mdsearch.runlog import describe_filtering, filtering_label
+    assert filtering_label(describe_filtering(got["semantic_fill"])) == "none; metadata fill-in (weight 0.3)"
     seen: list[str] = []
     stage = got["semantic_fill"].first_stage
     orig = stage.scores

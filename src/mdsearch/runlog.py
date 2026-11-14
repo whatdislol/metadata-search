@@ -67,6 +67,7 @@ def describe_filtering(pipe: Any) -> dict[str, Any]:
         "kind": "+".join(kinds) if kinds else "none", "components": parts,
         "query_expansion": bool(getattr(getattr(pipe, "parser", None), "expand", False)),
         "metadata_fill": bool(getattr(getattr(pipe, "parser", None), "fill_keys", None)),
+        "fill_weight": getattr(pipe, "fill_weight", None),
         "product_metadata": bool(getattr(pipe, "product_metadata", False)),
     }
 
@@ -78,7 +79,8 @@ def describe_methods(methods: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 def filtering_label(desc: Mapping[str, Any]) -> str:
     """One readable line, e.g. 'hard (metadata fields: missing=exclude)'."""
     note = ("; query expansion" if desc.get("query_expansion") else "") + (
-        "; metadata fill-in" if desc.get("metadata_fill") else ""
+        (f"; metadata fill-in (weight {desc['fill_weight']:g})" if desc.get("fill_weight") is not None
+         else "; metadata fill-in") if desc.get("metadata_fill") else ""
     ) + (
         "; product metadata in the text" if desc.get("product_metadata") else ""
     )
