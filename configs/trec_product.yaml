@@ -42,8 +42,10 @@ encoders:
 
 
 retrieval:
-  rerank_depth: 100
+  rerank_depth: 1000
   rrf_k: 60
+  fill:
+    weight: 0.3
   tags:                      # generated-tag methods: qam_tags (mode below), qam_tags_hard, qam_tags_soft
     top_frac: 0.3
     weight: 0.5              # soft filter: z-scored tag similarity x this is added to the z-scored cross-encoder score
@@ -56,8 +58,8 @@ eval:
   methods: [keyword, keyword_meta, keyword_meta_fill, semantic, semantic_meta, semantic_meta_fill, rerank, rerank_meta, rerank_meta_fill, hybrid, hybrid_meta, hybrid_meta_fill]
   ks: 
     P: [10]
-    nDCG: [100]
-    R: [100]
+    nDCG: [1000]
+    R: [1000]
   rel_threshold: 1
   out_dir: results/trec_product
 

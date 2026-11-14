@@ -41,7 +41,8 @@ META_BASES = ("keyword", "semantic", "rerank", "hybrid")  # bases that can searc
 #            cross-encoder always sees the user's original query
 #   _fill    the LLM instead fills in metadata values for the query using the SAME keys as the product
 #            metadata (category, brand, color, ...), written as "Metadata: category=...; material=..." and
-#            appended to the first-stage query, so query and products share one format. Not offered for qam.
+#            scored SEPARATELY in the first stage: z(query) + retrieval.fill.weight * z(filled metadata),
+#            so the weight says how much the filled metadata counts. Not offered for qam.
 #            Needs representation.metadata (fields / category_levels); works with or without `_meta`.
 #
 #   Examples: rerank_meta, hybrid_meta_soft_expand, keyword_expand, qam_soft.
@@ -174,6 +175,7 @@ def build_methods(
     tag_kinds: tuple[str, ...] | None = None,
     meta: MetaReps | None = None,
     fill_keys: Sequence[str] = (),
+    fill_weight: float = 0.3,
 ) -> dict[str, SearchPipeline]:
     """Builds the named methods in the order given (default: the five base methods).
 
@@ -242,6 +244,7 @@ def build_methods(
         methods[name] = SearchPipeline(
             name, catalog=catalog, first_stage=stage,  # type: ignore[arg-type]
             reranker=scorer if base in reranked else None,
-            rerank_depth=rerank_depth, rerank_text=rerank_text, product_metadata=with_meta, **parts,
+            rerank_depth=rerank_depth, rerank_text=rerank_text, product_metadata=with_meta,
+            fill_weight=fill_weight if fill else None, **parts,
         )
     return methods

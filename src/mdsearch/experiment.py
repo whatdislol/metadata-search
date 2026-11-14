@@ -114,6 +114,7 @@ def make_methods(
         tag_weight=tags.get("weight", 0.5),
         tag_kinds=_tag_kinds(tags.get("kinds")),
         meta=_meta_reps(rep, plain, catalog, wanted_meta),
+        fill_weight=float((ret.get("fill") or {}).get("weight", 0.3)),
         fill_keys=metadata_keys((rep.get("metadata") or {}).get("fields") or [],
                                 int((rep.get("metadata") or {}).get("category_levels") or 0)),
     )

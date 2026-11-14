@@ -461,6 +461,16 @@ def test_fill_method_searches_query_plus_filled_metadata(catalog):
                         **COMMON(FakeLLM(reply(semantic_text="bricks", tags=[], metadata={"category": "Building Toys"}))))
     r = got["semantic_fill"].search("lego bricks", k=3)
     assert r.parsed.expansion == "Metadata: category=Building Toys" and r.hits
+    seen: list[str] = []
+    stage = got["semantic_fill"].first_stage
+    orig = stage.scores
+    stage.scores = lambda q, mask=None: (seen.append(q), orig(q, mask))[1]
+    got["semantic_fill"].search("lego bricks", k=3)
+    assert seen == ["lego bricks", "Metadata: category=Building Toys"]  # scored separately, not concatenated
+    base = build_methods(catalog, only=("semantic",), **COMMON(None))["semantic"].search("lego bricks", k=5)
+    zero = build_methods(catalog, only=("semantic_fill",), fill_keys=["category"], fill_weight=0.0,
+                         **COMMON(FakeLLM(reply(semantic_text="b", tags=[], metadata={"category": "Building Toys"}))))
+    assert [h.id for h in zero["semantic_fill"].search("lego bricks", k=5).hits] == [h.id for h in base.hits]  # weight 0 = plain
     with pytest.raises(ValueError, match="_fill methods need"):
         build_methods(catalog, only=("semantic_fill",), **COMMON(FakeLLM(reply(semantic_text="b"))))
     with pytest.raises(ValueError, match="rerank_fill"):

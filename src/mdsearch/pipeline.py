@@ -34,6 +34,14 @@ def _z(x: np.ndarray) -> np.ndarray:
     return (x - x.mean()) / sd if sd > 1e-12 else np.zeros_like(x, dtype=float)
 
 
+def _zm(x: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """z-score over the unmasked entries (masked ones stay as they are)."""
+    out = x.astype(float).copy()
+    if mask.any():
+        out[mask] = _z(out[mask])
+    return out
+
+
 @dataclass
 class Hit:
     id: str
@@ -71,6 +79,7 @@ class SearchPipeline:
     reranker: Scorer | None = None
     rerank_depth: int = 100
     rerank_text: Callable[[Product], str] = field(default=lambda p: f"{p.title}. {p.description}")
+    fill_weight: float | None = None  # _fill methods: weight of the filled query metadata in the first stage
     product_metadata: bool = False  # the product texts searched carry LLM-written metadata tags (_meta methods)
 
     def search(self, query: str, k: int = 10, parsed: ParsedQuery | None = None) -> SearchResult:
@@ -106,10 +115,18 @@ class SearchPipeline:
             steps = (report.steps if report else []) + match.steps
             report = FilterReport(total=n, remaining=int(mask.sum()), steps=steps)
 
-        if parsed is not None and parsed.expansion:
+        fill = self.fill_weight is not None and parsed is not None and bool(parsed.expansion)
+        if parsed is not None and parsed.expansion and not fill:
             semantic_q = f"{semantic_q}. {parsed.expansion}"  # query expansion; reranker still sees `query`
         soft = boost is not None and self.tag_matcher.mode == "soft"
-        raw = self.first_stage.scores(semantic_q, mask)
+        if fill:
+            # _fill: the query and its filled metadata are scored separately (z-scored over the pool) and
+            # added: z(query) + weight * z(metadata). weight 0 is the plain method; large = metadata decides.
+            raw = _zm(self.first_stage.scores(semantic_q, mask), mask) + self.fill_weight * _zm(
+                self.first_stage.scores(parsed.expansion, mask), mask
+            )
+        else:
+            raw = self.first_stage.scores(semantic_q, mask)
         scores = np.where(mask, raw, -np.inf)
         # a soft filter reorders a candidate list, so without a second stage it still needs one longer than k
         depth = self.rerank_depth if self.reranker is not None or soft else k
