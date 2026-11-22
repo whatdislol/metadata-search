@@ -113,6 +113,13 @@ def metadata_text(values: dict[str, str], keys: Sequence[str], max_chars: int = 
     return "Metadata: " + "; ".join(items) if items else ""
 
 
+def filled_count(expansion: str) -> int:
+    """How many keys a `Metadata: k=v; k=v` string fills (0 for an empty or non-metadata string)."""
+    if not expansion.startswith("Metadata: "):
+        return 0
+    return sum(1 for item in expansion[len("Metadata: "):].split("; ") if "=" in item)
+
+
 class _TagReply(BaseModel):
     semantic_text: str
     tags: list[Tag] = Field(default_factory=list)

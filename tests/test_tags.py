@@ -477,3 +477,19 @@ def test_fill_method_searches_query_plus_filled_metadata(catalog):
         build_methods(catalog, only=("semantic_fill",), **COMMON(FakeLLM(reply(semantic_text="b"))))
     with pytest.raises(ValueError, match="rerank_fill"):
         build_methods(catalog, only=("qam_fill",), **COMMON(FakeLLM(reply(semantic_text="b"))))
+
+
+def test_queries_can_be_kept_by_how_many_metadata_keys_were_filled():
+    from mdsearch.eval.dispatch import select_by_fill
+    from mdsearch.query.tag_parser import TagParser, filled_count
+
+    assert filled_count("Metadata: brand=A; category=Toys") == 2 and filled_count("") == 0
+    replies = {"lego": {"category": "Toys", "brand": "LEGO"}, "gift": {}, "red lego car": {"category": "Toys", "brand": "LEGO", "color": "red"}}
+
+    def handler(prompt, system, schema):
+        q = prompt.rsplit("Query: ", 1)[1].strip()
+        return json.dumps({"semantic_text": q, "tags": [], "metadata": replies[q]})
+
+    parser = TagParser(FakeLLM(handler), fill_keys=["category", "brand", "color"])
+    kept, n = select_by_fill({"q1": "lego", "q2": "gift", "q3": "red lego car"}, parser, 2)
+    assert kept == {"q1": "lego", "q3": "red lego car"} and n == {"q1": 2, "q2": 0, "q3": 3}

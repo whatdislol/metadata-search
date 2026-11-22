@@ -46,6 +46,19 @@ def results_dir(cfg: Mapping[str, Any], style: str = "specific", out_suffix: str
     return d.with_name(d.name + out_suffix) if out_suffix else d
 
 
+def select_by_fill(queries: Mapping[str, str], parser: Any, min_keys: int) -> tuple[dict[str, str], dict[str, int]]:
+    """Keeps the queries for which the `_fill` LLM filled at least `min_keys` metadata keys.
+
+    `parser` is the TagParser the `_fill` methods use (same prompt, so its replies are cached and shared).
+    Returns (kept queries, {query_id: keys filled} for every query)."""
+    from ..query.tag_parser import filled_count
+
+    ids = list(queries)
+    parsed = parser.parse_many([queries[q] for q in ids])
+    n = {q: filled_count(p.expansion) for q, p in zip(ids, parsed)}
+    return {q: queries[q] for q in ids if n[q] >= min_keys}, n
+
+
 @dataclass
 class Outcome:
     report: dict[str, Any]
@@ -64,6 +77,8 @@ def run_evaluation(
     limit: int | None = None,
     out_suffix: str = "",
     verbose: bool = True,
+    fill_parser: Any = None,
+    min_filled_keys: int | None = None,
 ) -> Outcome:
     ecfg = cfg["eval"]
     mode = eval_mode(cfg)
@@ -72,6 +87,8 @@ def run_evaluation(
     meta = {"config": config_name, "eval_mode": mode, "encoders": cfg.get("encoders"),
             "representation": cfg.get("representation"), "n_products": len(catalog)}
 
+    if min_filled_keys and mode != "qrels":
+        raise SystemExit("eval.min_filled_keys only works with eval.mode qrels")
     if mode == "llm_judge":
         if llm is None:
             raise SystemExit("eval.mode llm_judge needs an LLM (the judge)")
@@ -96,6 +113,15 @@ def run_evaluation(
         raise SystemExit(f"{path} not found. Run scripts/01_prepare.py --config {config_name or '<config>'}")
     ev = EvalSet.load(path)
     queries_d = dict(list(ev.queries.items())[:limit]) if limit else ev.queries
+    if min_filled_keys:
+        if fill_parser is None:
+            raise SystemExit("eval.min_filled_keys needs the _fill parser (an LLM and representation.metadata keys)")
+        total = len(queries_d)
+        queries_d, filled = select_by_fill(queries_d, fill_parser, min_filled_keys)
+        meta["query_filter"] = {"min_filled_keys": min_filled_keys, "kept": len(queries_d), "of": total,
+                                "filled_per_query": filled}
+        if not queries_d:
+            raise SystemExit(f"no query has {min_filled_keys} or more metadata keys filled")
     mks = metric_ks(ks)
     report = evaluate_qrels(
         methods, queries_d, ev.qrels, ks=ks, rel_threshold=ecfg.get("rel_threshold", ev.rel_threshold),

@@ -40,7 +40,7 @@ def main() -> None:
         products = stream(resolve_path(a.corpus), a.limit)
     else:
         cfg = load_experiment_config(a.config)
-        products = load_products(resolve_path(cfg["dataset"]["processed"]))
+        products = load_products(resolve_path(cfg["dataset"]["products"]))
         if a.limit:
             products = products[: a.limit]
     print(format_profile(profile(products, a.top, a.min_coverage)))

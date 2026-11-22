@@ -20,6 +20,7 @@ from mdsearch.eval.runner import format_table
 from mdsearch.methods import build_methods
 from mdsearch.pipeline import SearchPipeline
 from mdsearch.rank import BM25Retriever
+from mdsearch.query.schema import ParsedQuery
 from mdsearch.representation import TitleDescription
 
 # records copied from the real TREC corpus
@@ -200,6 +201,16 @@ def test_dispatch_qrels_mode_end_to_end_then_analysis(catalog, tmp_path):
     assert suffixed.out_dir.name == "res_b"
     limited = run_evaluation(cfg, catalog, methods, llm=None, limit=1, verbose=False)
     assert limited.report["meta"]["n_queries"] == 1
+
+    class Fill:  # stand-in for the _fill parser: the first query gets 2 keys, the rest none
+        def parse_many(self, qs):
+            return [ParsedQuery(semantic_text=q, expansion="Metadata: a=1; b=2" if i == 0 else "") for i, q in enumerate(qs)]
+    kept = run_evaluation(cfg, catalog, methods, llm=None, verbose=False, fill_parser=Fill(), min_filled_keys=2)
+    qf = kept.report["meta"]["query_filter"]
+    assert qf["kept"] == 1 and qf["min_filled_keys"] == 2 and kept.report["meta"]["n_queries"] == 1
+    assert len({r["query_id"] for r in kept.report["per_query"]} if "per_query" in kept.report else {1}) == 1
+    with pytest.raises(SystemExit, match="no query has 5"):
+        run_evaluation(cfg, catalog, methods, llm=None, verbose=False, fill_parser=Fill(), min_filled_keys=5)
 
 
 def test_analyze_qrels_reports_pool_sizes_and_paired_comparison():

@@ -84,6 +84,12 @@ def _meta_reps(rep: dict, plain: dict, catalog: Catalog, wanted: bool) -> MetaRe
     return reps
 
 
+def fill_keys(cfg: dict[str, Any]) -> list[str]:
+    """The metadata keys the product text carries (and the `_fill` LLM is asked to fill)."""
+    m = cfg["representation"].get("metadata") or {}
+    return metadata_keys(m.get("fields") or [], int(m.get("category_levels") or 0))
+
+
 def make_methods(
     cfg: dict[str, Any],
     catalog: Catalog,
@@ -115,6 +121,5 @@ def make_methods(
         tag_kinds=_tag_kinds(tags.get("kinds")),
         meta=_meta_reps(rep, plain, catalog, wanted_meta),
         fill_weight=float((ret.get("fill") or {}).get("weight", 0.3)),
-        fill_keys=metadata_keys((rep.get("metadata") or {}).get("fields") or [],
-                                int((rep.get("metadata") or {}).get("category_levels") or 0)),
+        fill_keys=fill_keys(cfg),
     )
