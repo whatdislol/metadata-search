@@ -493,3 +493,21 @@ def test_queries_can_be_kept_by_how_many_metadata_keys_were_filled():
     parser = TagParser(FakeLLM(handler), fill_keys=["category", "brand", "color"])
     kept, n = select_by_fill({"q1": "lego", "q2": "gift", "q3": "red lego car"}, parser, 2)
     assert kept == {"q1": "lego", "q3": "red lego car"} and n == {"q1": 2, "q2": 0, "q3": 3}
+
+
+def test_fill_can_add_other_keys_with_preferred_ones_first():
+    from mdsearch.query.tag_parser import build_tag_prompt, metadata_text
+
+    keys = ["category", "brand"]
+    vals = {"pattern": "plaid", "Brand": "LEGO", "shape": "round", "category": "Toys"}
+    assert metadata_text(vals, keys) == "Metadata: category=Toys; brand=LEGO"  # strict: preferred keys only
+    assert metadata_text(vals, keys, max_items=3) == "Metadata: category=Toys; brand=LEGO; pattern=plaid"
+    assert "water_resistance_level" in build_tag_prompt("q", fill_keys=keys, open_keys=True)
+    assert "water_resistance_level" not in build_tag_prompt("q", fill_keys=keys)
+    seen = []
+    llm = FakeLLM(lambda prompt, system, schema: (seen.append(system), json.dumps(
+        {"semantic_text": "x", "tags": [], "metadata": vals}))[1])
+    assert TagParser(llm, fill_keys=keys, fill_max=3).parse("plaid lego").expansion.endswith("pattern=plaid")
+    assert "at most 3 keys in total" in seen[0] and "Prefer these keys" in seen[0]
+    assert TagParser(llm, fill_keys=keys).parse("plaid lego").expansion == "Metadata: category=Toys; brand=LEGO"
+    assert "ONLY these keys" in seen[1]

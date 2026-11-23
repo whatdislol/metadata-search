@@ -20,8 +20,8 @@ import argparse
 from collections import Counter
 
 from mdsearch.config import load_experiment_config
-from mdsearch.eval.dispatch import default_methods, eval_mode, format_outcome, run_evaluation
-from mdsearch.experiment import fill_keys, load_catalog, make_methods
+from mdsearch.eval.dispatch import default_methods, eval_mode, format_outcome, qrels_queries, run_evaluation, select_by_fill
+from mdsearch.experiment import fill_keys, fill_max, load_catalog, make_methods
 from mdsearch.llm import get_llm
 from mdsearch.methods import uses_llm
 from mdsearch.query.tag_parser import TagParser
@@ -49,13 +49,21 @@ def main() -> None:
     with record_run("04_evaluate", config=args.config, args=vars(args), label=args.style if eval_mode(cfg) == "llm_judge" else "") as run:
         llm = get_llm(args.provider) if needs_llm else None
         catalog = load_catalog(cfg)
-        methods = make_methods(cfg, catalog, llm, only=only)
         fill_parser = None
         if min_keys:
             keys = fill_keys(cfg)
             if not keys:
                 raise SystemExit("min_filled_keys needs representation.metadata (fields / category_levels)")
-            fill_parser = TagParser(llm, fill_keys=keys)  # the same parser (and cached replies) as the _fill methods
+            if eval_mode(cfg) != "qrels":
+                raise SystemExit("min_filled_keys only works with eval.mode qrels")
+            fill_parser = TagParser(llm, fill_keys=keys, fill_max=fill_max(cfg))  # the same parser (and cached replies) as the _fill methods
+            # the LLM step runs BEFORE the (slow) embedding, so a failure here costs nothing; its replies are cached
+            _, qs = qrels_queries(cfg, args.limit, args.config)
+            kept, _ = select_by_fill(qs, fill_parser, min_keys)
+            print(f"query filter: {len(kept)} of {len(qs)} queries have >= {min_keys} metadata keys filled")
+            if not kept:
+                raise SystemExit(f"no query has {min_keys} or more metadata keys filled")
+        methods = make_methods(cfg, catalog, llm, only=only)
         run.set_filtering(describe_methods(methods))
         outcome = run_evaluation(
             cfg, catalog, methods, llm=llm, config_name=args.config, style=args.style,

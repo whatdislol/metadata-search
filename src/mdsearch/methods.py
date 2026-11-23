@@ -175,6 +175,7 @@ def build_methods(
     tag_kinds: tuple[str, ...] | None = None,
     meta: MetaReps | None = None,
     fill_keys: Sequence[str] = (),
+    fill_max: int | None = None,
     fill_weight: float = 0.3,
 ) -> dict[str, SearchPipeline]:
     """Builds the named methods in the order given (default: the five base methods).
@@ -229,7 +230,7 @@ def build_methods(
             parts["metadata_filter"] = MetadataFilter(catalog)
             parts["parser"] = fields if mode is None else CombinedParser(fields, TagParser(llm))  # type: ignore[arg-type]
         elif mode is not None or expand or fill:  # tags are generated even when only the expansion is used
-            parts["parser"] = TagParser(llm, expand=expand, fill_keys=fill_keys if fill else None)  # type: ignore[arg-type]
+            parts["parser"] = TagParser(llm, expand=expand, fill_keys=fill_keys if fill else None, fill_max=fill_max)  # type: ignore[arg-type]
         stage = first_stage[base]
         tag_index = dense
         rerank_text = rerank_rep.render

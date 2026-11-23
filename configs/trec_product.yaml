@@ -33,13 +33,14 @@ representation:
     fields: ["Brand", "Manufacturer", "Color", "Material", "Item model number", "Size", "Style", "Item Dimensions LxWxH", "Number of Items", "Unit Count", "Special Feature", "Included Components", "Shape", "Part Number", "Country of Origin", "Age Range (Description)", "Number of Pieces", "Item Form", "Language", "Manufacturer Part Number"]
     max_value_chars: 80
     position: before
+    other_keys: true        # add more metadata on top of the ones in `fields` such that the total metadata <= length of `fields`
 
 encoders:
   dense: nomic-ai/nomic-embed-text-v1
   cross_encoder: cross-encoder/msmarco-MiniLM-L12-en-de-v1
   embedding_cache: .cache/trec_dense.npz
   score_cache: .cache/ce_trec.sqlite
-
+  device: cuda
 
 retrieval:
   rerank_depth: 1000

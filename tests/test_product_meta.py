@@ -220,3 +220,57 @@ def test_profile_metadata():
     assert r["n"] == 4 and r["have"]["category"] == 4 and r["category_depth"] == {2: 4}
     assert r["suggested_fields"] == ["Brand"] and "Size" in [k["key"] for k in r["keys"]]
     assert "fields: [\"Brand\"]" in format_profile(r)
+
+
+def test_native_metadata_can_add_other_keys_up_to_a_limit():
+    from mdsearch.representation import NativeMetadata
+
+    p = Product(id="1", title="Clamp", description="d", category="Tools > Clamps",
+                extra={"attrs": {"Brand": "YUEPIN", "Pattern": "plain", "Shape": "U"},
+                       "info": {"Manufacturer": "WS", "Item Model Number": "X1"}})
+    base = TitleDescription()
+    strict = NativeMetadata(base, ["Brand|Manufacturer", "Color"], 1)
+    assert strict.meta_text(p) == "Metadata: category=Clamps; brand=YUEPIN"  # Pattern, Shape, model number dropped
+    rank = {"item model number": 0, "shape": 1, "pattern": 2}  # most common in the catalog first
+    full = NativeMetadata(base, ["Brand|Manufacturer", "Color"], 1, other_keys=True, max_items=4, key_rank=rank)
+    # preferred first, then the most common other keys; Manufacturer is an alias of a preferred field: not repeated
+    assert full.meta_text(p) == "Metadata: category=Clamps; brand=YUEPIN; item_model_number=X1; shape=U"
+    assert len(NativeMetadata(base, ["Brand"], 1, other_keys=True, key_rank=rank).items(p)) == 6  # no limit; Manufacturer is not an alias here
+    assert NativeMetadata(base, ["Brand", "Pattern"], 1, max_items=2).meta_text(p) == "Metadata: category=Clamps; brand=YUEPIN"
+
+
+def test_meta_reps_other_keys_rank_by_catalog_frequency(catalog, capsys):
+    from mdsearch.experiment import _meta_reps, fill_max, fill_options
+
+    for i, prod in enumerate(catalog.products):
+        prod.extra = {"attrs": {"Brand": "B", "Shape": "S"} if i else {"Brand": "B", "Shape": "S", "Rare": "R"}}
+    plain = {c: TitleDescription() for c in ("dense", "bm25", "rerank")}
+    m = {"fields": ["Brand"], "other_keys": True}
+    assert fill_options(m) == (True, 1) and fill_options({"fields": ["Brand"]}) == (False, None)
+    assert fill_max({"representation": {"metadata": {"fields": ["Brand"], "category_levels": 2, "other_keys": True}}}) == 2
+    reps = _meta_reps({"metadata": {**m, "max_items": 2}}, plain, catalog, True)
+    assert reps.dense.items(catalog.products[0]) == [("brand", "B"), ("shape", "S")]  # Shape is commoner than Rare
+    assert "other keys added up to 2 in all" in capsys.readouterr().out
+
+
+def test_other_keys_order_does_not_depend_on_hash_order(catalog):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    code = """
+import sys; sys.path.insert(0, 'src')
+from mdsearch.catalog import Catalog
+from mdsearch.data.schema import Product
+from mdsearch.experiment import _meta_reps
+from mdsearch.representation import TitleDescription
+ps = [Product(id=str(i), title='t', extra={'attrs': {'Brand': 'B', 'Shape': 'S', 'Pattern': 'P', 'Finish': 'F'}}) for i in range(3)]
+plain = {c: TitleDescription() for c in ('dense', 'bm25', 'rerank')}
+r = _meta_reps({'metadata': {'fields': ['Brand'], 'other_keys': True, 'max_items': 2}}, plain, Catalog(ps), False)
+print(r.dense.meta_text(ps[0]))
+"""
+    root = Path(__file__).resolve().parents[1]
+    outs = {subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True,
+                           env={**os.environ, "PYTHONHASHSEED": str(seed)}).stdout for seed in range(1, 7)}
+    assert outs == {"Metadata: brand=B; finish=F\n"}  # ties: alphabetical, the same in every run

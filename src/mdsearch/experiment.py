@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import Counter
+
 from typing import Any
 
 from .catalog import Catalog
@@ -52,7 +54,8 @@ def _meta_reps(rep: dict, plain: dict, catalog: Catalog, wanted: bool) -> MetaRe
 
     representation.metadata: fields (attribute names; "Brand|Manufacturer" = first found), category_levels
     (last N levels of the category path), max_value_chars, position (before|after), use (which components
-    read the metadata: any of dense, bm25, rerank; default all). The LLM-written product tags
+    read the metadata: any of dense, bm25, rerank; default all), other_keys (also write the product's other
+    attributes, most common first) and max_items (items per product; default = category + fields). The LLM-written product tags
     (scripts/06_tag_products.py) are not used here."""
     m = rep.get("metadata") or {}
     fields, levels = list(m.get("fields") or []), int(m.get("category_levels") or 0)
@@ -65,23 +68,53 @@ def _meta_reps(rep: dict, plain: dict, catalog: Catalog, wanted: bool) -> MetaRe
     if bad:
         raise SystemExit(f"representation.metadata.use: unknown component(s) {sorted(bad)}")
 
+    other, max_items = fill_options(m)
+    rank: dict[str, int] = {}
+    if other:
+        counts: Counter[str] = Counter()
+        for p in catalog.products:
+            counts.update({" ".join(str(k).split()).lower() for t in ("attrs", "info") for k in (p.extra.get(t) or {})})
+        # ties broken by key name: the order (and so the product text and its cached embeddings) must not
+        # depend on Python's per-run hash order
+        rank = {k: i for i, k in enumerate(sorted(counts, key=lambda k: (-counts[k], k)))}
+
+    def native(base):
+        return NativeMetadata(base, fields, levels, m.get("max_value_chars", 80), m.get("position", "before"),
+                              other_keys=other, max_items=max_items, key_rank=rank)
+
     def one(component: str):
         if component not in use:
             return plain[component]  # the very same object: build_methods then reuses the plain index
-        return NativeMetadata(
-            plain[component], fields, levels, m.get("max_value_chars", 80), m.get("position", "before")
-        )
+        return native(plain[component])
 
     reps = MetaReps(one("dense"), one("bm25"), one("rerank"))
     if wanted:
-        probe = NativeMetadata(plain["dense"], fields, levels, m.get("max_value_chars", 80))
-        have = [p for p in catalog.products if probe.items(p)]
-        print(f"product metadata: {len(have)} of {len(catalog)} products have some ({len(have) / max(len(catalog), 1):.1%})")
+        probe = native(plain["dense"])
+        sizes = [len(probe.items(p)) for p in catalog.products]
+        have = [p for p, n in zip(catalog.products, sizes) if n]
+        print(f"product metadata: {len(have)} of {len(catalog)} products have some ({len(have) / max(len(catalog), 1):.1%}); "
+              f"items per product: mean {sum(sizes) / max(len(sizes), 1):.1f}"
+              + (f", other keys added up to {max_items} in all" if other else ""))
         if have:
             print(f"  e.g. {probe.meta_text(have[0])}")
         if len(have) < len(catalog):
             print("  products without metadata are read as plain text (re-run script 01 if none have any)")
     return reps
+
+
+def fill_options(m: dict[str, Any]) -> tuple[bool, int | None]:
+    """(other_keys, max_items) of representation.metadata; max_items defaults to category + fields."""
+    other = bool(m.get("other_keys", False))
+    n = m.get("max_items")
+    if n is None and other:
+        n = len(metadata_keys(m.get("fields") or [], int(m.get("category_levels") or 0)))
+    return other, (int(n) if n is not None else None)
+
+
+def fill_max(cfg: dict[str, Any]) -> int | None:
+    """For the `_fill` LLM: None = only the preferred keys; N = other keys allowed, at most N in all."""
+    other, n = fill_options(cfg["representation"].get("metadata") or {})
+    return n if other else None
 
 
 def fill_keys(cfg: dict[str, Any]) -> list[str]:
@@ -122,4 +155,5 @@ def make_methods(
         meta=_meta_reps(rep, plain, catalog, wanted_meta),
         fill_weight=float((ret.get("fill") or {}).get("weight", 0.3)),
         fill_keys=fill_keys(cfg),
+        fill_max=fill_max(cfg),
     )

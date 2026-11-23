@@ -59,6 +59,19 @@ using ONLY these keys: {keys}. Values are short (1-4 words) and written the way 
 states the value or makes it very likely (category, material or type); leave a key out when it is unknown. \
 Never invent a brand, colour, size, number or price the shopper did not mention."""
 
+FILL_OPEN_SYSTEM = """
+
+Also return "metadata": an object that fills in the metadata a matching product's listing would carry. \
+Prefer these keys, the most common in the catalog: {keys}. You may add other attributes a listing would show \
+(lowercase names with underscores, e.g. "water_resistance_level"), but use at most {max} keys in total, \
+preferred keys first. Values are short (1-4 words) and written the way a listing writes them (for "category", \
+the name of the product category, e.g. "Hiking Backpacks"). Fill a key when the query states the value or \
+makes it very likely (category, material or type); leave a key out when it is unknown. Never invent a brand, \
+colour, size, number or price the shopper did not mention."""
+
+# keys outside the preferred list that the open-key examples show
+_FILL_EXTRA = {0: {"water_resistance_level": "waterproof"}}
+
 # (query, semantic_text, tags, metadata); examples are filtered to the keys that exist in the product text
 _FILL_EXAMPLES = (
     ("waterproof backpack under 40 pounds for hiking", "hiking backpack",
@@ -89,27 +102,39 @@ Now the real query.
 Query: {query}"""
 
 
-def _fill_examples(keys: Sequence[str]) -> str:
+def _fill_examples(keys: Sequence[str], open_keys: bool = False) -> str:
     allowed = set(keys)
     out = ["Examples:\n"]
-    for q, sem, tags, meta in _FILL_EXAMPLES:
+    for i, (q, sem, tags, meta) in enumerate(_FILL_EXAMPLES):
         meta = {k: v for k, v in meta.items() if k in allowed}
+        if open_keys:
+            meta.update(_FILL_EXTRA.get(i, {}))
         reply = json.dumps({"semantic_text": sem, "tags": tags, "metadata": meta}, ensure_ascii=False)
         out.append(f"Query: {q}\n{reply}\n")
     return "\n".join(out).replace("{", "{{").replace("}", "}}") + "\nNow the real query.\n\nQuery: {query}"
 
 
-def build_tag_prompt(query: str, expand: bool = False, fill_keys: Sequence[str] | None = None) -> str:
+def build_tag_prompt(query: str, expand: bool = False, fill_keys: Sequence[str] | None = None,
+                     open_keys: bool = False) -> str:
     if fill_keys:
-        return _fill_examples(fill_keys).format(query=query)
+        return _fill_examples(fill_keys, open_keys).format(query=query)
     return (EXPAND_EXAMPLES if expand else TAG_USER).format(query=query)
 
 
-def metadata_text(values: dict[str, str], keys: Sequence[str], max_chars: int = 80) -> str:
-    """`Metadata: key=value; ...` in the order of `keys`, in the format the product text uses. Keys outside
-    `keys` and empty values are dropped, so the LLM cannot add fields the products do not have."""
+def metadata_text(values: dict[str, str], keys: Sequence[str], max_chars: int = 80,
+                  max_items: int | None = None) -> str:
+    """`Metadata: key=value; ...` in the format the product text uses, keys in the order of `keys`.
+
+    max_items None: keys outside `keys` and empty values are dropped, so the LLM cannot add fields the
+    products do not have. max_items N: the preferred `keys` first, then the LLM's other keys in its order,
+    at most N in all."""
     have = {str(k).strip().lower().replace(" ", "_"): " ".join(str(v).split())[:max_chars] for k, v in values.items()}
-    items = [f"{k}={have[k]}" for k in keys if have.get(k)]
+    order = list(keys)
+    if max_items is not None:
+        order += [k for k in have if k not in set(keys)]
+    items = [f"{k}={have[k]}" for k in order if have.get(k)]
+    if max_items is not None:
+        items = items[:max_items]
     return "Metadata: " + "; ".join(items) if items else ""
 
 
@@ -128,7 +153,7 @@ class _TagReply(BaseModel):
 
 
 def _to_parsed(reply: _TagReply, query: str, max_tags: int, expand: bool = False,
-               fill_keys: Sequence[str] | None = None) -> ParsedQuery:
+               fill_keys: Sequence[str] | None = None, fill_max: int | None = None) -> ParsedQuery:
     seen: set[str] = set()
     tags: list[Tag] = []
     for t in reply.tags:
@@ -138,7 +163,7 @@ def _to_parsed(reply: _TagReply, query: str, max_tags: int, expand: bool = False
             tags.append(t)
     return ParsedQuery(
         semantic_text=reply.semantic_text.strip() or query, tags=tags[:max_tags],
-        expansion=metadata_text(reply.metadata, fill_keys) if fill_keys
+        expansion=metadata_text(reply.metadata, fill_keys, max_items=fill_max) if fill_keys
         else " ".join(reply.expansion.split()) if expand else "",
     )
 
@@ -147,14 +172,19 @@ class TagParser:
     """Drop-in replacement for QueryParser that returns generated tags instead of fixed filters."""
 
     def __init__(self, llm: LLM, retries: int = 2, max_tags: int = 6, expand: bool = False,
-                 fill_keys: Sequence[str] | None = None) -> None:
+                 fill_keys: Sequence[str] | None = None, fill_max: int | None = None) -> None:
         self.llm = llm
         self.fill_keys = list(fill_keys) if fill_keys else None  # fill in these metadata keys (the `_fill` methods)
+        # None: only fill_keys; N: fill_keys preferred, other keys allowed, at most N in all
+        self.fill_max = fill_max if self.fill_keys and fill_max else None
         self.expand = expand and not self.fill_keys  # also ask for a query expansion (query rewriting)
-        self.system = TAG_SYSTEM + (
-            FILL_SYSTEM.replace("{keys}", ", ".join(self.fill_keys)) if self.fill_keys
-            else EXPAND_SYSTEM if self.expand else ""
-        )
+        if self.fill_keys and self.fill_max:
+            fill = FILL_OPEN_SYSTEM.replace("{keys}", ", ".join(self.fill_keys)).replace("{max}", str(self.fill_max))
+        elif self.fill_keys:
+            fill = FILL_SYSTEM.replace("{keys}", ", ".join(self.fill_keys))
+        else:
+            fill = EXPAND_SYSTEM if self.expand else ""
+        self.system = TAG_SYSTEM + fill
         self.retries = retries
         self.max_tags = max_tags
         self.n_failures = 0  # queries that fell back to "no tags"
@@ -162,10 +192,10 @@ class TagParser:
     def parse(self, query: str) -> ParsedQuery:
         try:
             reply = complete_json(
-                self.llm, build_tag_prompt(query, self.expand, self.fill_keys), _TagReply, system=self.system,
+                self.llm, build_tag_prompt(query, self.expand, self.fill_keys, bool(self.fill_max)), _TagReply, system=self.system,
                 retries=self.retries,
             )
-            return _to_parsed(reply, query, self.max_tags, self.expand, self.fill_keys)
+            return _to_parsed(reply, query, self.max_tags, self.expand, self.fill_keys, self.fill_max)
         except LLMError as e:
             log.warning("Tag generation failed for %r (%s); using no tags", query, e)
             self.n_failures += 1
@@ -174,12 +204,12 @@ class TagParser:
     def parse_many(self, queries: list[str]) -> list[ParsedQuery]:
         schema = _TagReply.model_json_schema()
         replies = self.llm.complete_many(
-            [build_tag_prompt(q, self.expand, self.fill_keys) for q in queries], system=self.system, schema=schema
+            [build_tag_prompt(q, self.expand, self.fill_keys, bool(self.fill_max)) for q in queries], system=self.system, schema=schema
         )
         out: list[ParsedQuery] = []
         for q, raw in zip(queries, replies):
             try:
-                out.append(_to_parsed(parse_reply(raw, _TagReply), q, self.max_tags, self.expand, self.fill_keys))
+                out.append(_to_parsed(parse_reply(raw, _TagReply), q, self.max_tags, self.expand, self.fill_keys, self.fill_max))
             except ValueError:
                 out.append(self.parse(q))
         return out

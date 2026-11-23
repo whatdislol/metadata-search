@@ -59,6 +59,15 @@ def select_by_fill(queries: Mapping[str, str], parser: Any, min_keys: int) -> tu
     return {q: queries[q] for q in ids if n[q] >= min_keys}, n
 
 
+def qrels_queries(cfg: Mapping[str, Any], limit: int | None = None, config_name: str = "") -> tuple[EvalSet, dict[str, str]]:
+    """The eval set and its queries (the first `limit` of them) for eval.mode qrels."""
+    path = resolve_path(cfg["dataset"]["eval_set"])
+    if not path.exists():
+        raise SystemExit(f"{path} not found. Run scripts/01_prepare.py --config {config_name or '<config>'}")
+    ev = EvalSet.load(path)
+    return ev, (dict(list(ev.queries.items())[:limit]) if limit else dict(ev.queries))
+
+
 @dataclass
 class Outcome:
     report: dict[str, Any]
@@ -108,11 +117,7 @@ def run_evaluation(
         )
         return Outcome(report, out_dir, [[f"P@{k}" for k in kl] + [f"mAP@{k}" for k in kl]])
 
-    path = resolve_path(cfg["dataset"]["eval_set"])
-    if not path.exists():
-        raise SystemExit(f"{path} not found. Run scripts/01_prepare.py --config {config_name or '<config>'}")
-    ev = EvalSet.load(path)
-    queries_d = dict(list(ev.queries.items())[:limit]) if limit else ev.queries
+    ev, queries_d = qrels_queries(cfg, limit, config_name)
     if min_filled_keys:
         if fill_parser is None:
             raise SystemExit("eval.min_filled_keys needs the _fill parser (an LLM and representation.metadata keys)")
