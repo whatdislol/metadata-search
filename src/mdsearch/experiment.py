@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+from collections import Counter
+
 from typing import Any
 
 from .catalog import Catalog
 from .config import resolve_path
 from .data.schema import load_products
 from .llm import LLM
-from .methods import build_methods
+from .methods import MetaReps, build_methods, parse_method
 from .query.schema import ATTRIBUTE_KINDS
 from .pipeline import SearchPipeline
 from .rank.cross_encoder import CachedScorer, CrossEncoderScorer
 from .rank.dense import SentenceTransformerEncoder
-from .representation import get_representation
+from .representation import NativeMetadata, get_representation, metadata_keys
 
 
 def _tag_kinds(value) -> tuple[str, ...] | None:
@@ -47,6 +49,80 @@ def style_paths(cfg: dict[str, Any], style: str):
     raise SystemExit(f"unknown --style {style!r}; use 'specific' or 'broad'")
 
 
+def _meta_reps(rep: dict, plain: dict, catalog: Catalog, wanted: bool) -> MetaReps | None:
+    """The `_meta` representations: the plain ones plus `Metadata: key=value; ...` from the corpus's own metadata.
+
+    representation.metadata: fields (attribute names; "Brand|Manufacturer" = first found), category_levels
+    (last N levels of the category path), max_value_chars, position (before|after), use (which components
+    read the metadata: any of dense, bm25, rerank; default all), other_keys (also write the product's other
+    attributes, most common first) and max_items (items per product; default = category + fields). The LLM-written product tags
+    (scripts/06_tag_products.py) are not used here."""
+    m = rep.get("metadata") or {}
+    fields, levels = list(m.get("fields") or []), int(m.get("category_levels") or 0)
+    if not fields and levels <= 0:
+        return None
+    if wanted and (m.get("file") or m.get("kinds")):
+        print("representation.metadata: 'file' and 'kinds' belong to the unused LLM tagging and are ignored")
+    use = set(m.get("use") or ("dense", "bm25", "rerank"))
+    bad = use - {"dense", "bm25", "rerank"}
+    if bad:
+        raise SystemExit(f"representation.metadata.use: unknown component(s) {sorted(bad)}")
+
+    other, max_items = fill_options(m)
+    rank: dict[str, int] = {}
+    if other:
+        counts: Counter[str] = Counter()
+        for p in catalog.products:
+            counts.update({" ".join(str(k).split()).lower() for t in ("attrs", "info") for k in (p.extra.get(t) or {})})
+        # ties broken by key name: the order (and so the product text and its cached embeddings) must not
+        # depend on Python's per-run hash order
+        rank = {k: i for i, k in enumerate(sorted(counts, key=lambda k: (-counts[k], k)))}
+
+    def native(base):
+        return NativeMetadata(base, fields, levels, m.get("max_value_chars", 80), m.get("position", "before"),
+                              other_keys=other, max_items=max_items, key_rank=rank)
+
+    def one(component: str):
+        if component not in use:
+            return plain[component]  # the very same object: build_methods then reuses the plain index
+        return native(plain[component])
+
+    reps = MetaReps(one("dense"), one("bm25"), one("rerank"))
+    if wanted:
+        probe = native(plain["dense"])
+        sizes = [len(probe.items(p)) for p in catalog.products]
+        have = [p for p, n in zip(catalog.products, sizes) if n]
+        print(f"product metadata: {len(have)} of {len(catalog)} products have some ({len(have) / max(len(catalog), 1):.1%}); "
+              f"items per product: mean {sum(sizes) / max(len(sizes), 1):.1f}"
+              + (f", other keys added up to {max_items} in all" if other else ""))
+        if have:
+            print(f"  e.g. {probe.meta_text(have[0])}")
+        if len(have) < len(catalog):
+            print("  products without metadata are read as plain text (re-run script 01 if none have any)")
+    return reps
+
+
+def fill_options(m: dict[str, Any]) -> tuple[bool, int | None]:
+    """(other_keys, max_items) of representation.metadata; max_items defaults to category + fields."""
+    other = bool(m.get("other_keys", False))
+    n = m.get("max_items")
+    if n is None and other:
+        n = len(metadata_keys(m.get("fields") or [], int(m.get("category_levels") or 0)))
+    return other, (int(n) if n is not None else None)
+
+
+def fill_max(cfg: dict[str, Any]) -> int | None:
+    """For the `_fill` LLM: None = only the preferred keys; N = other keys allowed, at most N in all."""
+    other, n = fill_options(cfg["representation"].get("metadata") or {})
+    return n if other else None
+
+
+def fill_keys(cfg: dict[str, Any]) -> list[str]:
+    """The metadata keys the product text carries (and the `_fill` LLM is asked to fill)."""
+    m = cfg["representation"].get("metadata") or {}
+    return metadata_keys(m.get("fields") or [], int(m.get("category_levels") or 0))
+
+
 def make_methods(
     cfg: dict[str, Any],
     catalog: Catalog,
@@ -56,6 +132,8 @@ def make_methods(
     rep, enc, ret = cfg["representation"], cfg["encoders"], cfg["retrieval"]
     tags = ret.get("tags", {})  # settings for the _hard / _soft tag variants
     max_chars = rep.get("max_chars", 2000)
+    plain = {c: get_representation(rep[c], max_chars) for c in ("dense", "bm25", "rerank")}
+    wanted_meta = any((p := parse_method(n)) is not None and p.meta for n in (only or ()))
     return build_methods(
         catalog,
         encoder=SentenceTransformerEncoder(
@@ -64,9 +142,9 @@ def make_methods(
         ),
         scorer=_scorer(enc),
         llm=llm,
-        dense_rep=get_representation(rep["dense"], max_chars),
-        bm25_rep=get_representation(rep["bm25"], max_chars),
-        rerank_rep=get_representation(rep["rerank"], max_chars),
+        dense_rep=plain["dense"],
+        bm25_rep=plain["bm25"],
+        rerank_rep=plain["rerank"],
         rerank_depth=ret.get("rerank_depth", 100),
         rrf_k=ret.get("rrf_k", 60),
         embedding_cache=resolve_path(enc["embedding_cache"]) if enc.get("embedding_cache") else None,
@@ -74,4 +152,8 @@ def make_methods(
         tag_top_frac=tags.get("top_frac", 0.3),
         tag_weight=tags.get("weight", 0.5),
         tag_kinds=_tag_kinds(tags.get("kinds")),
+        meta=_meta_reps(rep, plain, catalog, wanted_meta),
+        fill_weight=float((ret.get("fill") or {}).get("weight", 0.3)),
+        fill_keys=fill_keys(cfg),
+        fill_max=fill_max(cfg),
     )

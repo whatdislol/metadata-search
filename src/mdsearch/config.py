@@ -27,13 +27,30 @@ def load_yaml(path: str | os.PathLike[str]) -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
-def load_experiment_config(name_or_path: str) -> dict[str, Any]:
-    """Load e.g. 'qam_toys' (from configs/) or an explicit path."""
+def _merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+    """Nested dicts are merged key by key; anything else (lists, numbers, strings) in `over` replaces."""
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = _merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def load_experiment_config(name_or_path: str, _seen: tuple[str, ...] = ()) -> dict[str, Any]:
+    """Load e.g. 'qam_toys' (from configs/) or an explicit path.
+
+    A config may start from another one with `extends: <name>` and then only list what differs
+    (e.g. a small pilot config that extends the main one); nested sections are merged, lists are replaced."""
     p = Path(name_or_path)
     if not p.exists():
         stem = name_or_path if name_or_path.endswith(".yaml") else name_or_path + ".yaml"
         p = config_dir() / stem
-    return load_yaml(p)
+    cfg = load_yaml(p)
+    parent = cfg.pop("extends", None)
+    if parent is None:
+        return cfg
+    if str(p) in _seen:
+        raise ValueError(f"config 'extends' loop at {p}")
+    return _merge(load_experiment_config(parent, _seen + (str(p),)), cfg)
 
 
 def load_env() -> None:

@@ -7,6 +7,22 @@ from typing import Any, Protocol, Sequence
 import numpy as np
 
 
+def _check_device(device: str | None) -> None:
+    """Fails loudly when the config asks for a GPU that PyTorch cannot see (instead of running on the CPU)."""
+    import torch
+
+    if device and str(device).startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError(
+            f"encoders.device is {device!r} but PyTorch {torch.__version__} cannot use a GPU "
+            "(torch.cuda.is_available() is False). Install the CUDA build of PyTorch in this environment."
+        )
+
+
+def _report_device(name: str, model: Any) -> None:
+    dev = getattr(model, "device", None) or getattr(getattr(model, "model", None), "device", None)
+    print(f"{name} runs on {dev}", flush=True)
+
+
 class Encoder(Protocol):
     name: str
 
@@ -44,11 +60,13 @@ class SentenceTransformerEncoder:
                 from sentence_transformers import SentenceTransformer
             except ImportError as e:
                 raise RuntimeError("Install the ML extras: pip install -e '.[ml]'") from e
+            _check_device(self.device)
             self._model = SentenceTransformer(
                 self.name, trust_remote_code=True, device=self.device
             )
             if self.max_seq_length:
                 self._model.max_seq_length = self.max_seq_length
+            _report_device(self.name, self._model)
         return self._model
 
     def encode(self, texts: Sequence[str], *, kind: str) -> np.ndarray:

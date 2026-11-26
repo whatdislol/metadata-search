@@ -5,7 +5,7 @@
     python scripts/tools/list_methods.py --config trec_product   # also mark the ones in that config's eval.methods
     python scripts/tools/list_methods.py --name rerank_soft_expand   # one method in detail
 
-The names are <base>[_hard|_soft][_expand]; the table is built from the same grammar the code uses
+The names are <base>[_meta][_hard|_soft][_expand]; the table is built from the same grammar the code uses
 (src/mdsearch/methods.py), so it cannot go out of date.
 """
 
@@ -17,9 +17,9 @@ from mdsearch.config import load_experiment_config
 from mdsearch.eval.dispatch import default_methods
 from mdsearch.methods import BASE_METHODS, describe_method, method_catalog, parse_method
 
-COLUMNS = ("method", "llm", "filter", "first_stage", "second_stage", "datasets")
-TITLES = {"method": "method", "llm": "LLM step", "filter": "filter", "first_stage": "first stage searches",
-          "second_stage": "second stage", "datasets": "datasets"}
+COLUMNS = ("method", "documents", "llm", "filter", "first_stage", "second_stage", "datasets")
+TITLES = {"method": "method", "documents": "product text", "llm": "query LLM step", "filter": "filter",
+          "first_stage": "first stage searches", "second_stage": "second stage", "datasets": "needs"}
 
 
 def main() -> None:
@@ -50,7 +50,7 @@ def main() -> None:
         prev = base
         flag = ("* " if r["method"] in used else "  ") if args.config else "  "
         print(flag + "  ".join(r[c].ljust(width[c]) for c in COLUMNS).rstrip())
-    print(f"\n{len(rows)} methods. Names are <base>[_hard|_soft][_expand]; * = in eval.methods of the config.")
+    print(f"\n{len(rows)} methods. Names are <base>[_meta][_hard|_soft][_expand]; * = in eval.methods of the config.")
 
 
 if __name__ == "__main__":

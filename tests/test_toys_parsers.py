@@ -31,6 +31,22 @@ def test_parse_min_age():
     assert parse_min_age("Age: 5") == 5
     assert parse_min_age(None, "nothing here") is None
     assert parse_min_age(None, "8+ years") == 8  # later texts are used when earlier ones are empty
+    # ranges: lower end, with the shared unit
+    assert parse_min_age("Manufacturer recommended age: 6 - 12 years") == 6
+    assert parse_min_age("recommended for 6 to 12 months") == 0.5
+    assert parse_min_age("5-12 Years") == 5
+    # Amazon's impossible ranges: the first number is the real minimum
+    assert parse_min_age("Manufacturer recommended age:8 - 3 years Item") == 8
+    assert parse_min_age("Manufacturer recommended age:5 - 3 years") == 5
+    assert parse_min_age("Manufacturer recommended age:36 months - 12 years") == 3
+    # a label followed by a unit must respect the unit ("age:6 months" is NOT 6 years)
+    assert parse_min_age("Manufacturer recommended age: 18 months") == 1.5
+    assert parse_min_age("Manufacturer recommended age:6 months - 3 years") == 0.5
+    assert parse_min_age("Manufacturer recommended age:6 - 12 years") == 6
+    assert parse_min_age("Ages 6 years and up") == 6
+    assert parse_min_age("Age: 7+") == 7
+    # earliest mention wins, not "months before years"
+    assert parse_min_age("Ages 6 years and up. 6 months guarantee.") == 6
 
 
 def test_parse_reviews():

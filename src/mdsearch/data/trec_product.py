@@ -1,9 +1,11 @@
 """TREC Product Search loader. Only what is specific to this collection lives here; query / qrels
 reading, subset sampling and the saved eval set are shared (data/evalset.py).
 
-Corpus records are {"docid": int, "title": str, "text": str}. There are no structured price / brand /
-rating fields: whatever metadata exists is words inside `title` and `text`. The corpus has millions
-of products, so `prepare` keeps every judged product plus a random sample of the rest.
+Corpus records are {"docid": int, "title": str, "text": str, ...}. The newer corpus file also has the
+listing's category path, attribute tables ("attrs", "info"), price, stars and ratings; those are kept on
+the Product (category, extra, price, rating, n_reviews) for the `_meta` methods. The older file has only
+title and text. The corpus has millions of products, so `prepare` keeps every judged product plus a
+random sample of the rest.
 """
 
 from __future__ import annotations
@@ -44,11 +46,62 @@ def clean_text(text: str | None) -> str:
     return " ".join(parts)
 
 
+# keys of the corpus's attribute tables that never help a search (ids, ranks, dates, review summaries)
+NOISE_KEYS = {
+    "asin", "best sellers rank", "customer reviews", "date first available", "is discontinued by manufacturer",
+    "batteries required?", "batteries included?", "item weight", "product dimensions", "package dimensions",
+    "isbn-10", "isbn-13", "publication date", "print length", "dimensions", "customer review",
+}
+_MAX_VALUE = 200  # characters kept per attribute value in the processed file
+
+
+def clean_key(k: Any) -> str:
+    return " ".join(str(k).translate(_INVISIBLE).split()).strip(" :")
+
+
+def clean_value(v: Any) -> str:
+    return " ".join(str(v).translate(_INVISIBLE).split())[:_MAX_VALUE]
+
+
+def clean_table(d: Any) -> dict[str, str]:
+    """An attribute table ({"Brand": "FYY", ...}) with cleaned keys and values, without noise keys or empty values."""
+    if not isinstance(d, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in d.items():
+        key, val = clean_key(k), clean_value(v)
+        if key and val and key.lower() not in NOISE_KEYS:
+            out.setdefault(key, val)
+    return out
+
+
+def _number(text: Any) -> float | None:
+    m = re.search(r"\d[\d,]*\.?\d*", str(text or ""))
+    try:
+        return float(m.group(0).replace(",", "")) if m else None
+    except ValueError:
+        return None
+
+
 def to_product(rec: dict[str, Any]) -> Product:
+    """Title and text as before (so the plain baselines read the same text), plus the corpus's own metadata:
+    the category path (Product.category, levels joined by ' > '), the attribute tables (extra["attrs"],
+    extra["info"]), and price / star rating / number of ratings when the listing has them."""
+    category = [clean_value(c) for c in (rec.get("category") or []) if clean_value(c)]
+    extra: dict[str, Any] = {}
+    for name, table in (("attrs", rec.get("attrs") or rec.get("attr")), ("info", rec.get("info"))):
+        cleaned = clean_table(table)
+        if cleaned:
+            extra[name] = cleaned
+    price, rating, n = _number(rec.get("price")), _number(rec.get("stars")), _number(rec.get("ratings"))
     return Product(
         id=str(rec["docid"]),
         title=" ".join(str(rec.get("title") or "").split()),
         description=clean_text(str(rec.get("text") or "")),
+        price=price, rating=rating if rating is not None and rating <= 5 else None,
+        n_reviews=int(n) if n is not None else None,
+        category=" > ".join(category) or None,
+        extra=extra,
     )
 
 

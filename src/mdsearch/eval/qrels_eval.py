@@ -29,6 +29,28 @@ def _stat(values: Sequence[float]) -> dict[str, float]:
     return {"mean": float(np.mean(values)) if len(values) else float("nan"), "ci_lo": lo, "ci_hi": hi}
 
 
+METRICS = ("P", "AP", "nDCG", "R")
+
+
+def metric_ks(ks: Sequence[int] | Mapping[str, Sequence[int]]) -> dict[str, tuple[int, ...]]:
+    """Cutoffs per metric. A plain list applies to every metric; a mapping ({P: [...], nDCG: [...], R: [...]})
+    sets them independently. AP follows P when it is not listed."""
+    if not isinstance(ks, Mapping):
+        return {m: tuple(ks) for m in METRICS}
+    unknown = set(ks) - set(METRICS)
+    if unknown:
+        raise ValueError(f"eval.ks: unknown metric(s) {sorted(unknown)}; use {list(METRICS)}")
+    out = {m: tuple(int(k) for k in ks[m]) for m in METRICS if m in ks}
+    if "P" not in out and "AP" not in out:
+        raise ValueError("eval.ks needs at least P (or AP)")
+    out.setdefault("P", out.get("AP"))
+    out.setdefault("AP", out["P"])
+    for m in ("nDCG", "R"):
+        if m not in out:
+            raise ValueError(f"eval.ks has no cutoffs for {m}")
+    return out
+
+
 def ap_at_k(rel: Sequence[bool], k: int, n_relevant: int) -> float:
     if n_relevant == 0:
         return 0.0
@@ -54,7 +76,7 @@ def evaluate_qrels(
     queries: Mapping[str, str],
     qrels: Mapping[str, Mapping[str, int]],
     *,
-    ks: Sequence[int] = (5, 10, 20),
+    ks: Sequence[int] | Mapping[str, Sequence[int]] = (5, 10, 20),
     rel_threshold: int = 1,
     out_dir: str | Path | None = None,
     meta: dict[str, Any] | None = None,
@@ -64,7 +86,8 @@ def evaluate_qrels(
         if verbose:
             print(msg, flush=True)
 
-    kmax = max(ks)
+    mks = metric_ks(ks)
+    kmax = max(max(v) for v in mks.values())
     ids = list(queries)
     n_total = len(ids)
     texts = [queries[q] for q in ids]
@@ -92,10 +115,13 @@ def evaluate_qrels(
             rel = [g >= rel_threshold for g in gains]
             ideal = [g for g in judged.values() if g > 0]
             row: dict[str, float] = {}
-            for k in ks:
+            for k in mks["P"]:
                 row[f"P@{k}"] = sum(rel[:k]) / k
+            for k in mks["AP"]:
                 row[f"AP@{k}"] = ap_at_k(rel, k, n_rel)
+            for k in mks["nDCG"]:
                 row[f"nDCG@{k}"] = ndcg_at_k(gains, k, ideal)
+            for k in mks["R"]:
                 row[f"R@{k}"] = sum(rel[:k]) / n_rel
             for key, v in row.items():
                 cols.setdefault(key, []).append(v)

@@ -98,3 +98,18 @@ def test_qam_requires_llm(catalog):
             catalog, encoder=FakeEncoder(), scorer=FakeScorer(), llm=None,
             dense_rep=TitleDescription(), bm25_rep=TitleDescription(), rerank_rep=TitleDescription(),
         )
+
+
+def test_explicit_filters_work_without_an_llm(catalog):
+    from dataclasses import replace
+
+    from mdsearch.query.schema import Filters
+
+    texts = catalog.texts(TitleDescription())
+    base = SearchPipeline("kw", catalog, BM25Retriever(catalog.ids, texts))
+    filtered = replace(base, metadata_filter=MetadataFilter(catalog))
+    parsed = ParsedQuery(semantic_text="toy", filters=Filters(brand="LEGO", price_max=50))
+    res = filtered.search("creative LEGO under 50", k=5, parsed=parsed)
+    assert [h.id for h in res.hits] == ["a"] and res.filter_report.remaining == 1
+    # same query, no filter: the unfiltered pipeline is unaffected
+    assert len(base.search("creative LEGO under 50", k=5).hits) > 1

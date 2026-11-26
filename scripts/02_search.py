@@ -4,6 +4,11 @@
     python scripts/02_search.py --config trec_product -q "waterproof phone case" --methods rerank,rerank_hard,rerank_soft
     python scripts/02_search.py -q "creative building set" --methods rerank --brand LEGO --price-max 40 --age-max 8
 
+--methods: keyword, semantic, rerank, hybrid, qam (fixed fields, needs structured metadata), each with an
+           optional _hard / _soft (LLM-generated tags) and _expand (query expansion) suffix, e.g. rerank_hard,
+           hybrid_soft_expand, qam_soft (naming scheme at the top of src/mdsearch/methods.py).
+           Default: eval.methods of the config.
+Methods that use an LLM (qam and every suffixed variant) need a configured provider; the others run offline.
 
 Explicit filters (--brand --price-min --price-max --rating-min --age-min --age-max) add a second
 run of every plain ranker (keyword / semantic / rerank / hybrid) with those hard filters, so you see

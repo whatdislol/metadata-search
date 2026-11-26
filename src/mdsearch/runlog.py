@@ -59,13 +59,16 @@ def describe_filtering(pipe: Any) -> dict[str, Any]:
         else:
             parts.append(
                 {"type": "soft", "source": "generated tags matched by text", "weight": tm.weight,
-                 "applied_to": "final score" if getattr(pipe, "reranker", None) is not None else "first-stage score",
+                 "applied_to": "final score" if getattr(pipe, "reranker", None) is not None else "first-stage score",  # which score the tags are blended into
                  "kinds": sorted(tm.kinds) if tm.kinds is not None else "all"}
             )
     kinds = sorted({p["type"] for p in parts})
     return {
         "kind": "+".join(kinds) if kinds else "none", "components": parts,
         "query_expansion": bool(getattr(getattr(pipe, "parser", None), "expand", False)),
+        "metadata_fill": bool(getattr(getattr(pipe, "parser", None), "fill_keys", None)),
+        "fill_weight": getattr(pipe, "fill_weight", None),
+        "product_metadata": bool(getattr(pipe, "product_metadata", False)),
     }
 
 
@@ -75,7 +78,12 @@ def describe_methods(methods: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 
 def filtering_label(desc: Mapping[str, Any]) -> str:
     """One readable line, e.g. 'hard (metadata fields: missing=exclude)'."""
-    note = "; query expansion" if desc.get("query_expansion") else ""
+    note = ("; query expansion" if desc.get("query_expansion") else "") + (
+        (f"; metadata fill-in (weight {desc['fill_weight']:g})" if desc.get("fill_weight") is not None
+         else "; metadata fill-in") if desc.get("metadata_fill") else ""
+    ) + (
+        "; product metadata in the text" if desc.get("product_metadata") else ""
+    )
     if desc["kind"] == "none":
         return "none" + note
     bits = []
